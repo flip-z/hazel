@@ -289,7 +289,7 @@ case "$mode" in
     codex exec "Follow AGENTS.md. PLAN MODE: Do not edit task.md. Read $task_md. Write a clear implementation plan into $impl_md. Do not change repo code in plan mode."
     ;;
   implement)
-    codex exec "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    codex exec "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
     ;;
   *)
     echo "unknown HAZEL_MODE: $mode" >&2
@@ -309,7 +309,7 @@ const defaultAgentsContractSection = `## Agent Contract
 Rules:
 
 * Humans own: task.md (intent, acceptance, context, links)
-* Agents own: impl.md, artifacts/, code
+* Agents own: impl.md, code, and deliverables outside .hazel/
 * Agents must not edit task.md (avoid mixing intent/requirements with implementation details)
 * Agent must not remove or rewrite human acceptance criteria
 

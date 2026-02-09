@@ -59,7 +59,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "Repo layout:")
 	fmt.Fprintln(w, "  .hazel/board.yaml")
 	fmt.Fprintln(w, "  .hazel/config.yaml")
-	fmt.Fprintln(w, "  .hazel/tasks/HZ-0001/{task.md,impl.md,artifacts/}")
+	fmt.Fprintln(w, "  .hazel/tasks/HZ-0001/{task.md,impl.md}")
 	fmt.Fprintln(w)
 }
 

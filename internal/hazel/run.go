@@ -115,9 +115,6 @@ func ensureTaskScaffold(root, id string) error {
 
 func ensureTaskScaffoldWithColor(root, id, colorKey string) error {
 	td := taskDir(root, id)
-	if err := ensureDir(filepath.Join(td, "artifacts")); err != nil {
-		return err
-	}
 	// Create markdown files if missing. Hazel never overwrites.
 	files := map[string]string{
 		filepath.Join(td, "task.md"): templateTaskMD,
