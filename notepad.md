@@ -17,3 +17,10 @@
   - `hazel up` always starts the scheduler loop, but it only ticks when `scheduler_enabled` is true and `run_interval_seconds > 0`.
   - Board UI Schedule menu now toggles `scheduler_enabled` and edits `run_interval_seconds`; changes apply without restart.
 - Note: current scheduler is interval-based (every N seconds). A wall-clock daily schedule (needs a real time picker) is a separate feature.
+
+## 2026-02-09: Background `hazel up` failure masked "port already in use"
+
+- Symptom: `bin/hazel up` returned "server did not start (no state file written)" while `.hazel/server.log` contained `bind: address already in use`.
+- Root cause: the existing process on the configured port prevents the child server from binding; the parent timed out waiting for `.hazel/server.json`.
+- Fix:
+  - Improved `SpawnBackgroundServer` error message to detect "port already in use" and/or include tail of `.hazel/server.log`.
