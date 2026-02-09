@@ -52,6 +52,7 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	mux.HandleFunc("/mutate/task_color", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskColor(w, r, root) })
 	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
 	mux.HandleFunc("/mutate/interval", func(w http.ResponseWriter, r *http.Request) { uiMutateInterval(w, r, root) })
+	mux.HandleFunc("/mutate/run", func(w http.ResponseWriter, r *http.Request) { uiMutateRun(w, r, root) })
 
 	server := &http.Server{
 		Handler:           mux,
@@ -436,6 +437,41 @@ func uiMutateInterval(w http.ResponseWriter, r *http.Request, root string) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func uiMutateRun(w http.ResponseWriter, r *http.Request, root string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Preflight: if agent is unconfigured, fail fast rather than silently doing nothing.
+	cfg, cfgErr := loadConfigOrDefault(root)
+	if cfgErr == nil && cfg.Version == 0 {
+		cfg = defaultConfig()
+	}
+	if strings.TrimSpace(cfg.AgentCommand) == "" {
+		http.Error(w, "agent_command is not configured in .hazel/config.yaml", http.StatusBadRequest)
+		return
+	}
+
+	// Run asynchronously so the UI doesn't hang for long agent runs.
+	go func() {
+		res, err := RunTick(context.Background(), root, RunOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hazel: run tick error: %v\n", err)
+			return
+		}
+		if res != nil && res.DispatchedTaskID != "" {
+			fmt.Fprintf(os.Stderr, "hazel: dispatched %s\n", res.DispatchedTaskID)
+		}
+	}()
+
+	if r.Header.Get("X-Hazel-Ajax") == "1" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
 func uiMutateNewTask(w http.ResponseWriter, r *http.Request, root string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -675,6 +711,9 @@ const uiBoardHTML = `<!doctype html>
           <input type="text" name="title" placeholder="New backlog item title" required />
           <button type="submit">Create</button>
         </form>
+        <form action="/mutate/run" method="post" onsubmit="return hazelRunTick(this)">
+          <button type="submit">Run tick</button>
+        </form>
         <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
         {{if and .SchedulerOn (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
@@ -756,6 +795,16 @@ const uiBoardHTML = `<!doctype html>
       const fd = new FormData(form);
       fetch(form.action, { method: "POST", body: new URLSearchParams(fd), headers: { "X-Hazel-Ajax": "1" } })
         .then(() => location.reload());
+    }
+
+    function hazelRunTick(form) {
+      const btn = form.querySelector("button[type='submit']");
+      if (btn) { btn.disabled = true; btn.textContent = "Running..."; }
+      const fd = new FormData(form);
+      fetch(form.action, { method: "POST", body: new URLSearchParams(fd), headers: { "X-Hazel-Ajax": "1" } })
+        .then(() => setTimeout(() => location.reload(), 1500))
+        .catch(() => { if (btn) { btn.disabled = false; btn.textContent = "Run tick"; }});
+      return false;
     }
 
     let dragID = "";
