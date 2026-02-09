@@ -226,7 +226,7 @@ Hazel is a binary, so the standard approach is:
 
 Then users install:
 
-  brew tap <owner>/hazel
+  brew tap flip-z/hazel
   brew install hazel-cli
 `
 

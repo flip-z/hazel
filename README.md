@@ -41,6 +41,6 @@ git push --tags
 Users install:
 
 ```sh
-brew tap <owner>/hazel
+brew tap flip-z/hazel
 brew install hazel-cli
 ```
