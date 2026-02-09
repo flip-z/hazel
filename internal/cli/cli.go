@@ -256,7 +256,6 @@ func cmdUp(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	port := fs.Int("port", 0, "override config port")
-	scheduler := fs.Bool("scheduler", false, "run scheduler loop")
 	foreground := fs.Bool("foreground", false, "run in foreground (default: background)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -271,7 +270,6 @@ func cmdUp(ctx context.Context, args []string) int {
 	if !*foreground {
 		pid, addr, err := hazel.SpawnBackgroundServer(ctx, root, hazel.SpawnOptions{
 			PortOverride: *port,
-			Scheduler:    *scheduler,
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -281,7 +279,7 @@ func cmdUp(ctx context.Context, args []string) int {
 		return 0
 	}
 
-	addr, err := hazel.Up(ctx, root, hazel.UpOptions{PortOverride: *port, Scheduler: *scheduler})
+	addr, err := hazel.Up(ctx, root, hazel.UpOptions{PortOverride: *port})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

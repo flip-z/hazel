@@ -12,7 +12,6 @@ import (
 
 type SpawnOptions struct {
 	PortOverride int
-	Scheduler    bool
 }
 
 func SpawnBackgroundServer(ctx context.Context, root string, opt SpawnOptions) (pid int, addr string, err error) {
@@ -31,9 +30,6 @@ func SpawnBackgroundServer(ctx context.Context, root string, opt SpawnOptions) (
 	args := []string{"up", "--foreground"}
 	if opt.PortOverride != 0 {
 		args = append(args, "--port", fmtInt(opt.PortOverride))
-	}
-	if opt.Scheduler {
-		args = append(args, "--scheduler")
 	}
 
 	cmd := exec.Command(exe, args...)

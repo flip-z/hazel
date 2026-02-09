@@ -173,8 +173,13 @@ Hazel's automation tick is:
 
 To run it periodically, choose one:
 
-1. Run the scheduler loop inside the UI process:
-     hazel up --scheduler
+1. Run the Hazel UI server and enable the scheduler in the UI (Schedule menu), or set it in .hazel/config.yaml:
+
+     scheduler_enabled: true
+     run_interval_seconds: 60
+
+   Then:
+     hazel up
 
 2. Cron (example: every minute):
      */1 * * * * cd /path/to/repo && hazel run >> .hazel/cron.log 2>&1

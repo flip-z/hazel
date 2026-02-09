@@ -27,18 +27,18 @@ func (s Status) Valid() bool {
 }
 
 type Board struct {
-	Version int         `yaml:"version"`
+	Version int          `yaml:"version"`
 	Tasks   []*BoardTask `yaml:"tasks"`
 }
 
 type BoardTask struct {
-	ID           string    `yaml:"id"`
-	Title        string    `yaml:"title"`
-	Status       Status    `yaml:"status"`
-	Order        *int      `yaml:"order,omitempty"`
-	CreatedAt    time.Time `yaml:"created_at"`
-	UpdatedAt    time.Time `yaml:"updated_at"`
-	Deps         []string  `yaml:"deps,omitempty"`
+	ID        string    `yaml:"id"`
+	Title     string    `yaml:"title"`
+	Status    Status    `yaml:"status"`
+	Order     *int      `yaml:"order,omitempty"`
+	CreatedAt time.Time `yaml:"created_at"`
+	UpdatedAt time.Time `yaml:"updated_at"`
+	Deps      []string  `yaml:"deps,omitempty"`
 }
 
 func (t *BoardTask) Validate() error {
@@ -81,13 +81,14 @@ func (b *Board) Validate() error {
 }
 
 type Config struct {
-	Version              int    `yaml:"version"`
-	Port                 int    `yaml:"port"`
-	RunIntervalSeconds   int    `yaml:"run_interval_seconds"`
-	AgentCommand         string `yaml:"agent_command"`
-	EnableEnrichment     bool   `yaml:"enable_enrichment"`
-	EnableRuns           bool   `yaml:"enable_runs"`
-	UIHideDoneByDefault  bool   `yaml:"ui_hide_done_by_default"`
+	Version             int    `yaml:"version"`
+	Port                int    `yaml:"port"`
+	RunIntervalSeconds  int    `yaml:"run_interval_seconds"`
+	SchedulerEnabled    bool   `yaml:"scheduler_enabled"`
+	AgentCommand        string `yaml:"agent_command"`
+	EnableEnrichment    bool   `yaml:"enable_enrichment"`
+	EnableRuns          bool   `yaml:"enable_runs"`
+	UIHideDoneByDefault bool   `yaml:"ui_hide_done_by_default"`
 }
 
 func defaultConfig() Config {
@@ -95,6 +96,7 @@ func defaultConfig() Config {
 		Version:             1,
 		Port:                8765,
 		RunIntervalSeconds:  60,
+		SchedulerEnabled:    false,
 		AgentCommand:        "",
 		EnableEnrichment:    false,
 		EnableRuns:          true,

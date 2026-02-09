@@ -18,7 +18,6 @@ import (
 
 type UpOptions struct {
 	PortOverride int
-	Scheduler    bool
 }
 
 func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error) {
@@ -37,7 +36,6 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 		port = 8765
 	}
 
-	schedulerEnabled := opt.Scheduler
 	repoSlug := readRepoSlugFromGitConfig(root)
 	title := projectTitle(root)
 	if repoSlug != "" {
@@ -45,8 +43,8 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { uiBoard(w, r, root, cfg, schedulerEnabled, title, repoSlug) })
-	mux.HandleFunc("/task/", func(w http.ResponseWriter, r *http.Request) { uiTask(w, r, root, cfg, schedulerEnabled, title, repoSlug) })
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { uiBoard(w, r, root, cfg, title, repoSlug) })
+	mux.HandleFunc("/task/", func(w http.ResponseWriter, r *http.Request) { uiTask(w, r, root, cfg, title, repoSlug) })
 	mux.HandleFunc("/mutate/status", func(w http.ResponseWriter, r *http.Request) { uiMutateStatus(w, r, root) })
 	mux.HandleFunc("/mutate/priority", func(w http.ResponseWriter, r *http.Request) { uiMutatePriority(w, r, root) })
 	mux.HandleFunc("/mutate/new_task", func(w http.ResponseWriter, r *http.Request) { uiMutateNewTask(w, r, root) })
@@ -78,9 +76,8 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 		return "", err
 	}
 
-	if opt.Scheduler {
-		go schedulerLoop(ctx, root)
-	}
+	// Always run the scheduler loop; it is a no-op unless enabled in config.
+	go schedulerLoop(ctx, root)
 
 	go func() {
 		<-ctx.Done()
@@ -116,22 +113,29 @@ func schedulerLoop(ctx context.Context, root string) {
 		if err := readYAMLFile(configPath(root), &cfg); err != nil || cfg.Version == 0 {
 			cfg = defaultConfig()
 		}
-		interval := time.Duration(cfg.RunIntervalSeconds) * time.Second
-		if interval <= 0 {
-			interval = 60 * time.Second
+
+		enabled := cfg.SchedulerEnabled && cfg.RunIntervalSeconds > 0
+		wait := 2 * time.Second
+		if enabled {
+			wait = time.Duration(cfg.RunIntervalSeconds) * time.Second
+			if wait < 5*time.Second {
+				wait = 5 * time.Second
+			}
 		}
-		timer := time.NewTimer(interval)
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
-			_, _ = RunTick(ctx, root, RunOptions{})
+			if enabled {
+				_, _ = RunTick(ctx, root, RunOptions{})
+			}
 		}
 	}
 }
 
-func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, schedulerEnabled bool, title string, repoSlug string) {
+func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, title string, repoSlug string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -202,7 +206,7 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, sc
 		"AllStatuses": all,
 		"VisibleSet":  visibleSet,
 		"ColCount":    len(visible),
-		"Scheduler":   schedulerEnabled,
+		"SchedulerOn": cfg.SchedulerEnabled,
 		"IntervalSec": cfg.RunIntervalSeconds,
 		"Title":       title,
 		"RepoSlug":    repoSlug,
@@ -212,7 +216,7 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, sc
 	})
 }
 
-func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, _ bool, title string, repoSlug string) {
+func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, title string, repoSlug string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -408,15 +412,19 @@ func uiMutateInterval(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	enabled := strings.TrimSpace(r.FormValue("enabled")) != ""
 	raw := strings.TrimSpace(r.FormValue("interval"))
-	sec, err := strconv.Atoi(raw)
-	if err != nil || sec < 5 {
-		http.Error(w, "interval must be an integer >= 5 seconds", http.StatusBadRequest)
-		return
-	}
 
 	cfg, _ := loadConfigOrDefault(root)
-	cfg.RunIntervalSeconds = sec
+	cfg.SchedulerEnabled = enabled
+	if enabled {
+		sec, err := strconv.Atoi(raw)
+		if err != nil || sec < 5 {
+			http.Error(w, "interval must be an integer >= 5 seconds", http.StatusBadRequest)
+			return
+		}
+		cfg.RunIntervalSeconds = sec
+	}
 	if err := writeYAMLFile(configPath(root), &cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -668,20 +676,24 @@ const uiBoardHTML = `<!doctype html>
           <button type="submit">Create</button>
         </form>
         <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
-        {{if and .Scheduler (gt .IntervalSec 0)}}
+        {{if and .SchedulerOn (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
-          <details class="cols">
-            <summary>Schedule</summary>
-            <form class="colmenu" action="/mutate/interval" method="post">
-              <div class="hint" style="margin: 2px 6px 8px;">Tick interval (seconds)</div>
-              <div class="row" style="padding: 0 6px 6px;">
-                <input type="number" name="interval" min="5" step="1" value="{{.IntervalSec}}" />
-                <button type="submit">Set</button>
-              </div>
-              <div class="hint" style="margin: 0 6px 2px;">Applies without restarting.</div>
-            </form>
-          </details>
         {{end}}
+        <details class="cols">
+          <summary>Schedule{{if not .SchedulerOn}} (off){{end}}</summary>
+          <form class="colmenu" action="/mutate/interval" method="post">
+            <label>
+              <span>Enabled</span>
+              <input type="checkbox" name="enabled" value="1" {{if .SchedulerOn}}checked{{end}} />
+            </label>
+            <div class="hint" style="margin: 2px 6px 8px;">Tick interval (seconds)</div>
+            <div class="row" style="padding: 0 6px 6px;">
+              <input type="number" name="interval" min="5" step="1" value="{{.IntervalSec}}" />
+              <button type="submit">Save</button>
+            </div>
+            <div class="hint" style="margin: 0 6px 2px;">Applies without restarting.</div>
+          </form>
+        </details>
         <details class="cols">
           <summary>Choose columns</summary>
           <form class="colmenu" action="/" method="get">
