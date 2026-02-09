@@ -3,9 +3,11 @@ package hazel
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -25,6 +27,17 @@ func SpawnBackgroundServer(ctx context.Context, root string, opt SpawnOptions) (
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, "", err
+	}
+
+	port := opt.PortOverride
+	if port == 0 {
+		// Best-effort; if config can't be read, fall back to default.
+		if cfg, err := loadConfigOrDefault(root); err == nil && cfg.Port != 0 {
+			port = cfg.Port
+		}
+	}
+	if port == 0 {
+		port = 8765
 	}
 
 	args := []string{"up", "--foreground"}
@@ -64,5 +77,36 @@ func SpawnBackgroundServer(ctx context.Context, root string, opt SpawnOptions) (
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	// Improve diagnostics for common failure modes.
+	if ln, lerr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); lerr == nil {
+		_ = ln.Close()
+	} else if strings.Contains(lerr.Error(), "address already in use") {
+		return cmd.Process.Pid, "", fmt.Errorf("port %d already in use; stop the existing server or change .hazel/config.yaml port (see %s)", port, logPath)
+	}
+
+	last := tailFileLines(logPath, 6)
+	if strings.TrimSpace(last) != "" {
+		return cmd.Process.Pid, "", fmt.Errorf("server did not start (no state file written); last log lines:\n%s", last)
+	}
 	return cmd.Process.Pid, "", fmt.Errorf("server did not start (no state file written); see %s", logPath)
+}
+
+func tailFileLines(path string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimRight(string(b), "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return strings.Join(lines, "\n") + "\n"
+	}
+	return strings.Join(lines[len(lines)-n:], "\n") + "\n"
 }
