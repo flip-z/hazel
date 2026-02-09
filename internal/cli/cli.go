@@ -66,7 +66,7 @@ func usage(w *os.File) {
 func cmdInit(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	agent := fs.String("agent", "", "agent preset: codex|none (if empty, may prompt)")
+	agent := fs.String("agent", "", "agent preset: codex|claude|none (if empty, may prompt)")
 	nonInteractive := fs.Bool("non-interactive", false, "do not prompt; treat empty --agent as none")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -102,7 +102,8 @@ func promptAgentPreset() string {
 	}
 	fmt.Println("Select agent preset:")
 	fmt.Println("  1) codex")
-	fmt.Println("  2) none")
+	fmt.Println("  2) claude")
+	fmt.Println("  3) none")
 	fmt.Print("> ")
 	var s string
 	_, _ = fmt.Fscanln(os.Stdin, &s)
@@ -110,7 +111,9 @@ func promptAgentPreset() string {
 	switch s {
 	case "1", "codex":
 		return "codex"
-	case "2", "none", "":
+	case "2", "claude":
+		return "claude"
+	case "3", "none", "":
 		return "none"
 	default:
 		return "none"

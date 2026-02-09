@@ -9,7 +9,7 @@ import (
 )
 
 type InitOptions struct {
-	AgentPreset string // codex|none
+	AgentPreset string // codex|claude|none
 }
 
 func InitRepo(ctx context.Context, root string, opt InitOptions) error {
@@ -39,13 +39,16 @@ func InitRepo(ctx context.Context, root string, opt InitOptions) error {
 	}
 
 	// Agent preset wiring (best-effort; never blocks init if it can't write).
-	if strings.ToLower(strings.TrimSpace(opt.AgentPreset)) == "codex" {
+	preset := strings.ToLower(strings.TrimSpace(opt.AgentPreset))
+	if preset == "codex" || preset == "claude" {
 		var cfg Config
 		if err := readYAMLFile(configPath(root), &cfg); err == nil {
 			agentScript := filepath.Join(hazelDir(root), "agent.sh")
-			if !exists(agentScript) {
-				_ = writeFileAtomic(agentScript, []byte(templateAgentSh), 0o755)
+			body := templateAgentShCodex
+			if preset == "claude" {
+				body = templateAgentShClaude
 			}
+			_ = writeFileAtomic(agentScript, []byte(body), 0o755)
 			cfg.AgentCommand = ".hazel/agent.sh"
 			_ = writeYAMLFile(configPath(root), &cfg)
 		}
@@ -157,6 +160,7 @@ Hazel is a filesystem-first work queue. The repository is the source of truth.
 Hazel init can configure an agent preset:
 
   hazel init --agent codex
+  hazel init --agent claude
 
 This writes .hazel/agent.sh and sets .hazel/config.yaml agent_command so hazel run and hazel plan work out of the box.
 
@@ -241,6 +245,12 @@ If you want Codex to be allowed to edit files automatically, you can add --full-
 
 Adjust flags (sandbox/approval) to your environment and risk tolerance.
 
+## Example: Claude Code
+
+If you have Claude Code installed, you can set agent_command to run it headlessly:
+
+  agent_command: claude -p "Follow AGENTS.md. Work on task $HAZEL_TASK_ID. Read $HAZEL_TASK_DIR/task.md and write engineering work to $HAZEL_TASK_DIR/impl.md. Make code changes in the repo as needed."
+
 ## Installing Hazel
 
 Local (developer) install:
@@ -266,7 +276,7 @@ Then users install:
   brew install hazel-cli
 `
 
-const templateAgentSh = `#!/bin/sh
+const templateAgentShCodex = `#!/bin/sh
 set -eu
 
 mode="${HAZEL_MODE:-implement}"
@@ -290,6 +300,38 @@ case "$mode" in
     ;;
   implement)
     codex exec "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    ;;
+  *)
+    echo "unknown HAZEL_MODE: $mode" >&2
+    exit 2
+    ;;
+esac
+`
+
+const templateAgentShClaude = `#!/bin/sh
+set -eu
+
+mode="${HAZEL_MODE:-implement}"
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "claude not found on PATH" >&2
+  exit 1
+fi
+
+if [ -z "${HAZEL_TASK_ID:-}" ] || [ -z "${HAZEL_TASK_DIR:-}" ]; then
+  echo "HAZEL_TASK_ID/HAZEL_TASK_DIR not set" >&2
+  exit 1
+fi
+
+task_md="$HAZEL_TASK_DIR/task.md"
+impl_md="$HAZEL_TASK_DIR/impl.md"
+
+case "$mode" in
+  plan)
+    claude -p "Follow AGENTS.md. PLAN MODE: Do not edit task.md. Read $task_md. Write a clear implementation plan into $impl_md. Do not change repo code in plan mode."
+    ;;
+  implement)
+    claude -p "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
     ;;
   *)
     echo "unknown HAZEL_MODE: $mode" >&2

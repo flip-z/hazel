@@ -68,4 +68,3 @@ func readRepoSlugFromGitConfig(root string) string {
 	}
 	return ""
 }
-

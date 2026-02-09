@@ -2,11 +2,14 @@ package hazel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +56,10 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
 	mux.HandleFunc("/mutate/interval", func(w http.ResponseWriter, r *http.Request) { uiMutateInterval(w, r, root) })
 	mux.HandleFunc("/mutate/run", func(w http.ResponseWriter, r *http.Request) { uiMutateRun(w, r, root) })
+	mux.HandleFunc("/runs", func(w http.ResponseWriter, r *http.Request) { uiRuns(w, r, root, title, repoSlug) })
+	mux.HandleFunc("/runs/", func(w http.ResponseWriter, r *http.Request) { uiRunView(w, r, root, title, repoSlug) })
+	mux.HandleFunc("/api/run_state", func(w http.ResponseWriter, r *http.Request) { apiRunState(w, r, root) })
+	mux.HandleFunc("/api/run_tail", func(w http.ResponseWriter, r *http.Request) { apiRunTail(w, r, root) })
 
 	server := &http.Server{
 		Handler:           mux,
@@ -191,6 +198,14 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, ti
 	}
 
 	agentName, agentTip := agentUI(cfg)
+	runningTaskID := ""
+	runningMode := ""
+	running := false
+	if st, err := readRunState(root); err == nil && st != nil && st.Running {
+		running = true
+		runningTaskID = st.TaskID
+		runningMode = st.Mode
+	}
 
 	tpl := template.Must(template.New("board").Funcs(template.FuncMap{
 		"intp": func(p *int) string { // legacy; kept for template compatibility if extended later
@@ -214,6 +229,9 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, ti
 		"HazelURL":    hazelPoweredByURL(),
 		"AgentName":   agentName,
 		"AgentTip":    agentTip,
+		"Running":     running,
+		"RunningTask": runningTaskID,
+		"RunningMode": runningMode,
 	})
 }
 
@@ -620,6 +638,293 @@ func ringHexForPriorityLabel(lbl string) string {
 	}
 }
 
+func apiRunState(w http.ResponseWriter, r *http.Request, root string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	st, err := readRunState(root)
+	if err != nil {
+		// Treat missing/invalid state as "not running".
+		st = &RunState{Running: false}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(st)
+}
+
+func apiRunTail(w http.ResponseWriter, r *http.Request, root string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	lines := 80
+	if raw := strings.TrimSpace(r.URL.Query().Get("lines")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			lines = n
+		}
+	}
+	if lines > 400 {
+		lines = 400
+	}
+
+	st, _ := readRunState(root)
+	logPath := ""
+	if st != nil && st.LogPath != "" {
+		logPath = st.LogPath
+	}
+	if logPath == "" {
+		// Fall back to the newest run log.
+		logPath = newestRunLog(root)
+	}
+	if logPath == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(tailLines(string(b), lines)))
+}
+
+func newestRunLog(root string) string {
+	dir := runsDir(root)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var logs []string
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, ".log") {
+			logs = append(logs, filepath.Join(dir, name))
+		}
+	}
+	if len(logs) == 0 {
+		return ""
+	}
+	sort.Strings(logs)
+	return logs[len(logs)-1]
+}
+
+func tailLines(s string, n int) string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return strings.Join(lines, "\n") + "\n"
+	}
+	return strings.Join(lines[len(lines)-n:], "\n") + "\n"
+}
+
+func uiRuns(w http.ResponseWriter, r *http.Request, root string, title string, repoSlug string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/runs" {
+		http.NotFound(w, r)
+		return
+	}
+
+	type row struct {
+		Name     string
+		TaskID   string
+		Mode     string
+		ExitCode string
+	}
+
+	var rows []row
+	dir := runsDir(root)
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		base := strings.TrimSuffix(name, ".log")
+		taskID := ""
+		mode := ""
+		exit := ""
+		if parts := strings.SplitN(base, "_", 2); len(parts) == 2 {
+			taskID = parts[1]
+		}
+		metaPath := runMetaPathForLog(filepath.Join(dir, name))
+		if mb, err := os.ReadFile(metaPath); err == nil {
+			var m map[string]any
+			if json.Unmarshal(mb, &m) == nil {
+				if v, ok := m["mode"].(string); ok {
+					mode = v
+				}
+				if v, ok := m["task_id"].(string); ok {
+					taskID = v
+				}
+				if v, ok := m["exit_code"].(float64); ok {
+					exit = fmtInt(int(v))
+				}
+			}
+		}
+		rows = append(rows, row{
+			Name:     base,
+			TaskID:   taskID,
+			Mode:     mode,
+			ExitCode: exit,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name > rows[j].Name })
+
+	tpl := template.Must(template.New("runs").Parse(uiRunsHTML))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = tpl.Execute(w, map[string]any{
+		"Title":    title,
+		"RepoSlug": repoSlug,
+		"Rows":     rows,
+	})
+}
+
+func uiRunView(w http.ResponseWriter, r *http.Request, root string, title string, repoSlug string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/runs/")
+	name = strings.Trim(name, "/")
+	if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	logPath := filepath.Join(runsDir(root), name+".log")
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	st, _ := readRunState(root)
+	running := st != nil && st.Running && st.LogPath == logPath
+
+	tpl := template.Must(template.New("run").Parse(uiRunHTML))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = tpl.Execute(w, map[string]any{
+		"Title":    title,
+		"RepoSlug": repoSlug,
+		"Name":     name,
+		"Running":  running,
+		"Body":     string(b),
+	})
+}
+
+const uiRunsHTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{.Title}} - Runs</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#101a33; --text:#e9eefc; --muted:#aab4d6; --accent:#86f7c5; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
+    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
+    header a { color: var(--accent); text-decoration:none; font-size:12px; }
+    h1 { margin:6px 0 0; font-size:18px; }
+    main { padding: 18px 18px 28px; max-width: 980px; margin:0 auto; }
+    .panel { background: rgba(16,26,51,.85); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+    .row { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    table { width:100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align:left; padding:10px 8px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
+    th { color: rgba(233,238,252,.62); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; }
+    a.link { color: rgba(233,238,252,.9); text-decoration:none; }
+    a.link:hover { text-decoration: underline; }
+    .pill { display:inline-flex; align-items:center; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); padding:3px 8px; border-radius:999px; font-size:12px; color: rgba(233,238,252,.78); }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">Back to board</a>
+    <h1>Runs</h1>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="row">
+        <div class="pill">{{.Title}}</div>
+        <div class="pill">{{len .Rows}} logs</div>
+      </div>
+      <div style="margin-top:12px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Task</th>
+              <th>Mode</th>
+              <th>Exit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Rows}}
+              <tr>
+                <td><a class="link" href="/runs/{{.Name}}">{{.Name}}</a></td>
+                <td>{{.TaskID}}</td>
+                <td>{{if .Mode}}{{.Mode}}{{else}}?{{end}}</td>
+                <td>{{if .ExitCode}}{{.ExitCode}}{{else}}?{{end}}</td>
+              </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>`
+
+const uiRunHTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{.Title}} - Run {{.Name}}</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#101a33; --text:#e9eefc; --muted:#aab4d6; --accent:#86f7c5; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
+    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
+    header a { color: var(--accent); text-decoration:none; font-size:12px; }
+    h1 { margin:6px 0 0; font-size:18px; }
+    .meta { margin-top:6px; color: rgba(233,238,252,.6); font-size:12px; }
+    main { padding: 18px 18px 28px; max-width: 980px; margin:0 auto; }
+    pre { white-space: pre-wrap; background: rgba(0,0,0,.22); border:1px solid rgba(255,255,255,.10); padding:12px 12px; border-radius:12px; overflow:auto; }
+    .pill { display:inline-flex; align-items:center; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); padding:3px 8px; border-radius:999px; font-size:12px; color: rgba(233,238,252,.78); }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/runs">Back to runs</a>
+    <h1>{{.Name}}</h1>
+    <div class="meta">{{if .Running}}<span class="pill">running</span>{{else}}<span class="pill">done</span>{{end}}</div>
+  </header>
+  <main>
+    <pre id="hzBody">{{.Body}}</pre>
+  </main>
+  <script>
+    (function(){
+      const running = {{if .Running}}true{{else}}false{{end}};
+      if (!running) return;
+      setInterval(() => location.reload(), 1500);
+    })();
+  </script>
+</body>
+</html>`
+
 func parseVisibleColumns(r *http.Request, cfg Config, all []Status) []Status {
 	raw := r.URL.Query()["col"]
 	set := map[Status]bool{}
@@ -677,6 +982,7 @@ const uiBoardHTML = `<!doctype html>
     .colmenu button { width:100%; margin-top:8px; }
     .colmenu .row { display:flex; gap:8px; align-items:center; }
     .colmenu .row input[type="number"] { width: 96px; }
+    .colmenu pre { margin: 0; padding: 10px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.10); background: rgba(0,0,0,.22); color: rgba(233,238,252,.86); overflow:auto; max-height: min(60vh, 360px); font-size: 12px; }
     .pilltop { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); padding:7px 10px; border-radius: 999px; color: rgba(233,238,252,.78); }
     .dot { width:8px; height:8px; border-radius:999px; background: rgba(134,247,197,.9); box-shadow: 0 0 0 4px rgba(134,247,197,.12); }
     main { padding:16px 16px 20px; }
@@ -694,6 +1000,9 @@ const uiBoardHTML = `<!doctype html>
     .hint { margin-top:10px; color: rgba(233,238,252,.50); font-size:12px; }
     .card.dragging { opacity: .6; }
     .card { background: linear-gradient(180deg, rgba(0,0,0,.62), rgba(0,0,0,.62)), var(--cardbg, rgba(15,24,48,.92)); box-shadow: inset 0 0 0 3px var(--ring, rgba(255,255,255,0)); }
+    .card.running { border-color: rgba(134,247,197,.55); box-shadow: 0 0 0 3px rgba(134,247,197,.10), inset 0 0 0 3px rgba(134,247,197,.35); }
+    .spinner { width: 10px; height: 10px; border-radius: 999px; border: 2px solid rgba(233,238,252,.25); border-top-color: rgba(134,247,197,.85); animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .col.dropover { border-color: rgba(134,247,197,.45); box-shadow: 0 0 0 3px rgba(134,247,197,.10); }
     footer { padding: 12px 16px 18px; color: rgba(233,238,252,.50); font-size:12px; }
     footer a { color: rgba(134,247,197,.85); text-decoration:none; }
@@ -711,10 +1020,25 @@ const uiBoardHTML = `<!doctype html>
           <input type="text" name="title" placeholder="New backlog item title" required />
           <button type="submit">Create</button>
         </form>
-        <form action="/mutate/run" method="post" onsubmit="return hazelRunTick(this)">
-          <button type="submit">Run tick</button>
-        </form>
+        {{if .Running}}
+          <button type="button" onclick="hazelOpenLogs()">Running...</button>
+        {{else}}
+          <form action="/mutate/run" method="post" onsubmit="return hazelRunTick(this)">
+            <button type="submit">Run tick</button>
+          </form>
+        {{end}}
+        <a href="/runs">Runs</a>
+        <details class="cols" id="hzLogs">
+          <summary>Logs</summary>
+          <div class="colmenu">
+            <pre id="hzTail">No run output yet.</pre>
+            <div class="hint" style="margin-top:8px;"><a href="/runs">Open full run list</a></div>
+          </div>
+        </details>
         <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
+        {{if .Running}}
+          <span class="pilltop" title="Agent is running"><span class="spinner"></span>Running {{.RunningMode}} {{.RunningTask}}</span>
+        {{end}}
         {{if and .SchedulerOn (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
         {{end}}
@@ -757,7 +1081,7 @@ const uiBoardHTML = `<!doctype html>
         <section class="col dropzone" data-status="{{$status}}">
           <h2><span>{{$status}}</span><span>{{len $tasks}}</span></h2>
           {{range $tasks}}
-            <div class="card" draggable="true" data-id="{{.Task.ID}}" style="--cardbg: {{.ColorHex}}; --ring: {{.RingHex}};">
+            <div class="card {{if and $.Running (eq .Task.ID $.RunningTask)}}running{{end}}" draggable="true" data-id="{{.Task.ID}}" style="--cardbg: {{.ColorHex}}; --ring: {{.RingHex}};">
               <div class="id"><a href="/task/{{.Task.ID}}">{{.Task.ID}}</a></div>
               <div class="title">{{.Task.Title}}</div>
               <div class="meta">
@@ -802,7 +1126,10 @@ const uiBoardHTML = `<!doctype html>
       if (btn) { btn.disabled = true; btn.textContent = "Running..."; }
       const fd = new FormData(form);
       fetch(form.action, { method: "POST", body: new URLSearchParams(fd), headers: { "X-Hazel-Ajax": "1" } })
-        .then(() => setTimeout(() => location.reload(), 1500))
+        .then(() => {
+          hazelOpenLogs();
+          setTimeout(() => location.reload(), 1500);
+        })
         .catch(() => { if (btn) { btn.disabled = false; btn.textContent = "Run tick"; }});
       return false;
     }
@@ -851,6 +1178,38 @@ const uiBoardHTML = `<!doctype html>
         if (remaining <= 0) remaining = interval;
         el.textContent = String(remaining);
       }, 1000);
+    })();
+
+    function hazelOpenLogs() {
+      const logs = document.getElementById("hzLogs");
+      if (logs) logs.open = true;
+      hazelPollTail();
+    }
+
+    function hazelPollTail() {
+      const pre = document.getElementById("hzTail");
+      if (!pre) return;
+      fetch("/api/run_tail?lines=80", { headers: { "X-Hazel-Ajax": "1" } })
+        .then((r) => r.ok ? r.text() : "")
+        .then((txt) => { if (txt) pre.textContent = txt; });
+      fetch("/api/run_state", { headers: { "X-Hazel-Ajax": "1" } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((st) => {
+          if (!st || !st.running) return;
+          setTimeout(hazelPollTail, 1200);
+        });
+    }
+
+    (function(){
+      const logs = document.getElementById("hzLogs");
+      if (!logs) return;
+      logs.addEventListener("toggle", () => {
+        if (logs.open) hazelPollTail();
+      });
+      // If we're already running when the page loads, start polling.
+      fetch("/api/run_state", { headers: { "X-Hazel-Ajax": "1" } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((st) => { if (st && st.running) { logs.open = true; hazelPollTail(); } });
     })();
   </script>
 </body>

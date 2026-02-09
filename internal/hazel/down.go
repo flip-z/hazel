@@ -67,4 +67,3 @@ func Down(ctx context.Context, root string, opt DownOptions) (*DownResult, error
 	_ = clearServerState(root)
 	return &DownResult{WasRunning: true, PID: st.PID}, nil
 }
-

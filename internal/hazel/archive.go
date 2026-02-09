@@ -61,4 +61,3 @@ func ArchiveDone(ctx context.Context, root string, opt ArchiveOptions) (*Archive
 	}
 	return &ArchiveResult{ArchivedIDs: archived}, nil
 }
-

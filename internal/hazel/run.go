@@ -3,7 +3,9 @@ package hazel
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +24,19 @@ type RunResult struct {
 }
 
 func RunTick(ctx context.Context, root string, opt RunOptions) (*RunResult, error) {
+	var outRes *RunResult
+	var outErr error
+	err := withRepoLock(root, func() error {
+		outRes, outErr = runTickLocked(ctx, root, opt)
+		return outErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return outRes, nil
+}
+
+func runTickLocked(ctx context.Context, root string, opt RunOptions) (*RunResult, error) {
 	var cfg Config
 	if err := readYAMLFile(configPath(root), &cfg); err != nil {
 		return nil, err
@@ -74,6 +89,16 @@ func RunTick(ctx context.Context, root string, opt RunOptions) (*RunResult, erro
 		return res, nil
 	}
 
+	lp, _ := computeRunLogPath(root, cfg, now, next.ID)
+	// Mark as running (best-effort; never breaks the tick).
+	_ = writeRunState(root, &RunState{
+		Running:   true,
+		TaskID:    next.ID,
+		Mode:      "implement",
+		LogPath:   lp,
+		StartedAt: now,
+	})
+
 	exit, logPath, err := runAgentCommand(ctx, root, cfg, next.ID, now)
 	if err != nil {
 		// Still reconcile state below.
@@ -81,6 +106,32 @@ func RunTick(ctx context.Context, root string, opt RunOptions) (*RunResult, erro
 	}
 	res.AgentExitCode = &exit
 	res.RunLogPath = logPath
+
+	// Persist run metadata alongside the log for UI browsing (best-effort).
+	if logPath != "" {
+		_ = writeFileAtomic(runMetaPathForLog(logPath), mustJSONIndent(map[string]any{
+			"task_id":     next.ID,
+			"mode":        "implement",
+			"started_at":  now,
+			"ended_at":    time.Now(),
+			"exit_code":   exit,
+			"log_path":    logPath,
+			"dispatched":  true,
+			"hazel_root":  root,
+			"board_path":  boardPath(root),
+			"config_path": configPath(root),
+		}), 0o644)
+	}
+
+	_ = writeRunState(root, &RunState{
+		Running:   false,
+		TaskID:    next.ID,
+		Mode:      "implement",
+		LogPath:   logPath,
+		StartedAt: now,
+		EndedAt:   time.Now(),
+		ExitCode:  &exit,
+	})
 
 	// Consolidated lifecycle: any completed agent run ends in REVIEW.
 	var b2 Board
@@ -98,6 +149,17 @@ func RunTick(ctx context.Context, root string, opt RunOptions) (*RunResult, erro
 	}
 
 	return res, nil
+}
+
+func mustJSONIndent(v any) []byte {
+	b, _ := json.MarshalIndent(v, "", "  ")
+	if len(b) == 0 {
+		return []byte("{}\n")
+	}
+	if b[len(b)-1] != '\n' {
+		b = append(b, '\n')
+	}
+	return b
 }
 
 func runEnrichment(root string, b *Board, now time.Time) error {
@@ -157,10 +219,24 @@ Files:
 }
 
 func runAgentCommand(ctx context.Context, root string, cfg Config, taskID string, now time.Time) (exit int, logPath string, err error) {
-	return runAgentCommandMode(ctx, root, cfg, taskID, now, "implement")
+	runLogPath, err := computeRunLogPath(root, cfg, now, taskID)
+	if err != nil {
+		return 0, "", err
+	}
+	return runAgentCommandMode(ctx, root, cfg, taskID, now, "implement", runLogPath)
 }
 
-func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID string, now time.Time, mode string) (exit int, logPath string, err error) {
+func computeRunLogPath(root string, cfg Config, now time.Time, taskID string) (string, error) {
+	if !cfg.EnableRuns {
+		return "", nil
+	}
+	if err := ensureDir(runsDir(root)); err != nil {
+		return "", err
+	}
+	return filepath.Join(runsDir(root), fmt.Sprintf("%s_%s.log", now.Format("20060102T150405"), taskID)), nil
+}
+
+func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID string, now time.Time, mode string, runLogPath string) (exit int, logPath string, err error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", cfg.AgentCommand)
 	td := taskDir(root, taskID)
 	cmd.Dir = root
@@ -173,16 +249,19 @@ func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID st
 	)
 
 	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	runLogPath := ""
-	if cfg.EnableRuns {
-		if err := ensureDir(runsDir(root)); err != nil {
-			return 0, "", err
+	var lw io.Writer = &out
+	var f *os.File
+	if runLogPath != "" {
+		ff, ferr := os.OpenFile(runLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if ferr != nil {
+			return 0, "", ferr
 		}
-		runLogPath = filepath.Join(runsDir(root), fmt.Sprintf("%s_%s.log", now.Format("20060102T150405"), taskID))
+		f = ff
+		// Stream logs to disk for UI tailing; avoid buffering potentially huge output in memory.
+		lw = f
 	}
+	cmd.Stdout = lw
+	cmd.Stderr = lw
 
 	err = cmd.Run()
 	exit = 0
@@ -194,10 +273,8 @@ func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID st
 		}
 	}
 
-	if cfg.EnableRuns && runLogPath != "" {
-		if werr := writeFileAtomic(runLogPath, out.Bytes(), 0o644); werr != nil {
-			return exit, runLogPath, werr
-		}
+	if f != nil {
+		_ = f.Close()
 	}
 	return exit, runLogPath, nil
 }
