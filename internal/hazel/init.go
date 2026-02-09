@@ -204,6 +204,30 @@ If you want Codex to be allowed to edit files automatically, you can add --full-
   agent_command: codex exec --full-auto "Follow AGENTS.md. Work on task $HAZEL_TASK_ID. Read $HAZEL_TASK_DIR/task.md and write engineering work to $HAZEL_TASK_DIR/impl.md. Make code changes in the repo as needed."
 
 Adjust flags (sandbox/approval) to your environment and risk tolerance.
+
+## Installing Hazel
+
+Local (developer) install:
+
+  go install ./cmd/hazel
+
+Then ensure your Go bin dir is on PATH (usually $(go env GOPATH)/bin or $GOBIN).
+
+Homebrew (for sharing with others):
+
+Hazel is a binary, so the standard approach is:
+
+1. Publish GitHub releases (this repo is set up for GoReleaser + GitHub Actions).
+2. Create a separate Homebrew tap repo named homebrew-hazel.
+3. Configure .goreleaser.yaml with your owner/repo and push a tag:
+
+  git tag v0.1.0
+  git push --tags
+
+Then users install:
+
+  brew tap <owner>/hazel
+  brew install hazel
 `
 
 const defaultAgentsMD = `# AGENTS

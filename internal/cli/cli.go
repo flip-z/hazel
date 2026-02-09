@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"hazel/internal/hazel"
+	"github.com/flip-z/hazel/internal/hazel"
 )
 
 func Run(ctx context.Context, args []string) int {

@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"hazel/internal/cli"
+	"github.com/flip-z/hazel/internal/cli"
 )
 
 func main() {

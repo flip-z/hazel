@@ -1,4 +1,4 @@
-module hazel
+module github.com/flip-z/hazel
 
 go 1.25.1
 

@@ -1,0 +1,60 @@
+# GoReleaser config for GitHub releases + Homebrew tap publishing.
+#
+# One-time setup:
+# - Create a separate repo for the Homebrew tap, named: homebrew-hazel
+# - Replace the TODO values below with your GitHub org/user.
+#
+# Users will install via:
+#   brew tap <owner>/hazel
+#   brew install hazel
+#
+version: 2
+
+project_name: hazel
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: hazel
+    main: ./cmd/hazel
+    binary: hazel
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README*
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  draft: false
+
+brews:
+  - name: hazel
+    ids:
+      - default
+    homepage: "https://github.com/flip-z/hazel"
+    description: "Filesystem-first project work queue with a lightweight web UI."
+    repository:
+      owner: flip-z
+      name: homebrew-hazel
+    directory: Formula
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    test: |
+      system "#{bin}/hazel", "--help"

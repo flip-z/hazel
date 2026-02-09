@@ -1,4 +1,5 @@
 bin/
+.hazel/
 .hazel/export/
 .hazel/runs/
 .hazel/server.json
