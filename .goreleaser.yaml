@@ -31,11 +31,12 @@ builds:
 
 archives:
   - id: default
-    format: tar.gz
+    # `format` is deprecated in GoReleaser v2; use `formats`.
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README*
-      - LICENSE*
 
 checksum:
   name_template: "checksums.txt"
