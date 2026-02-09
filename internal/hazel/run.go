@@ -160,6 +160,10 @@ Files:
 }
 
 func runAgentCommand(ctx context.Context, root string, cfg Config, taskID string, now time.Time) (exit int, logPath string, err error) {
+	return runAgentCommandMode(ctx, root, cfg, taskID, now, "implement")
+}
+
+func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID string, now time.Time, mode string) (exit int, logPath string, err error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", cfg.AgentCommand)
 	td := taskDir(root, taskID)
 	cmd.Dir = root
@@ -168,6 +172,7 @@ func runAgentCommand(ctx context.Context, root string, cfg Config, taskID string
 		"HAZEL_TASK_ID="+taskID,
 		"HAZEL_TASK_DIR="+td,
 		"HAZEL_AGENT_PACKET="+taskFile(root, taskID, "agent_packet.md"),
+		"HAZEL_MODE="+mode,
 	)
 
 	var out bytes.Buffer

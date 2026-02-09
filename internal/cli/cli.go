@@ -66,6 +66,8 @@ func usage(w *os.File) {
 func cmdInit(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	agent := fs.String("agent", "", "agent preset: codex|none (if empty, may prompt)")
+	nonInteractive := fs.Bool("non-interactive", false, "do not prompt; treat empty --agent as none")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -80,11 +82,39 @@ func cmdInit(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	if err := hazel.InitRepo(ctx, root); err != nil {
+	preset := strings.ToLower(strings.TrimSpace(*agent))
+	if preset == "" && !*nonInteractive {
+		preset = promptAgentPreset()
+	}
+	if preset == "" {
+		preset = "none"
+	}
+	if err := hazel.InitRepo(ctx, root, hazel.InitOptions{AgentPreset: preset}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	return 0
+}
+
+func promptAgentPreset() string {
+	if st, err := os.Stdin.Stat(); err != nil || (st.Mode()&os.ModeCharDevice) == 0 {
+		return ""
+	}
+	fmt.Println("Select agent preset:")
+	fmt.Println("  1) codex")
+	fmt.Println("  2) none")
+	fmt.Print("> ")
+	var s string
+	_, _ = fmt.Fscanln(os.Stdin, &s)
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "1", "codex":
+		return "codex"
+	case "2", "none", "":
+		return "none"
+	default:
+		return "none"
+	}
 }
 
 func cmdDoctor(ctx context.Context, args []string) int {
@@ -305,10 +335,13 @@ func cmdPlan(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := hazel.PlanTask(root, id); err != nil {
+	res, err := hazel.Plan(ctx, root, id)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("Planned %s\n", id)
+	if res.RunLogPath != "" {
+		fmt.Printf("Run log: %s\n", res.RunLogPath)
+	}
 	return 0
 }

@@ -1,127 +1,57 @@
 package hazel
 
 import (
+	"context"
 	"fmt"
-	"strings"
+	"time"
 )
 
-const planStart = "<!-- HAZEL-PLAN START -->"
-const planEnd = "<!-- HAZEL-PLAN END -->"
-
-func PlanTask(root, id string) error {
-	if err := ensureTaskScaffold(root, id); err != nil {
-		return err
+// Plan runs the configured agent in "plan" mode for a given task.
+// It must not edit task.md; it should write planning output to impl.md.
+func Plan(ctx context.Context, root string, taskID string) (*RunResult, error) {
+	var cfg Config
+	if err := readYAMLFile(configPath(root), &cfg); err != nil {
+		return nil, err
 	}
-	md, err := readTaskMD(root, id)
-	if err != nil {
-		return err
-	}
-	updated, err := upsertPlanBlock(md)
-	if err != nil {
-		return err
-	}
-	return writeTaskMD(root, id, updated)
-}
-
-func upsertPlanBlock(md string) (string, error) {
-	cfg, hasCfg, stripped, cfgBlock, err := splitHazelConfig(md)
-	if err != nil {
-		return "", err
-	}
-	_ = cfg
-	// Remove any existing plan block from stripped content.
-	base := removePlanBlock(stripped)
-
-	bodyForPlan := base
-	if b, err := stripTaskConfigForRender(base); err == nil {
-		bodyForPlan = b
+	if cfg.AgentCommand == "" {
+		return nil, fmt.Errorf("agent_command is not configured in .hazel/config.yaml")
 	}
 
-	plan := generatePlan(bodyForPlan)
-	out := strings.TrimRight(base, " \t\r\n") + "\n\n" + planStart + "\n" + plan + "\n" + planEnd + "\n"
-	if hasCfg {
-		out = strings.TrimRight(out, " \t\r\n") + "\n" + cfgBlock
-	} else {
-		// If task.md has no config, keep it that way. Color/priority setters add config explicitly.
+	var b Board
+	if err := readYAMLFile(boardPath(root), &b); err != nil {
+		return nil, err
 	}
-	return out, nil
-}
+	if err := b.Validate(); err != nil {
+		return nil, err
+	}
 
-func removePlanBlock(md string) string {
-	i := strings.Index(md, planStart)
-	if i < 0 {
-		return md
-	}
-	j := strings.Index(md[i:], planEnd)
-	if j < 0 {
-		return md
-	}
-	j = i + j + len(planEnd)
-	return strings.TrimRight(md[:i]+md[j:], " \t\r\n") + "\n"
-}
-
-func generatePlan(taskBody string) string {
-	ac := extractSection(taskBody, "Acceptance Criteria")
-	var checklist []string
-	for _, line := range strings.Split(ac, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	var t *BoardTask
+	for _, x := range b.Tasks {
+		if x.ID == taskID {
+			t = x
+			break
 		}
-		line = strings.TrimPrefix(line, "-")
-		line = strings.TrimPrefix(line, "*")
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		checklist = append(checklist, "- [ ] "+line)
 	}
-	if len(checklist) == 0 {
-		checklist = []string{"- [ ] (fill in acceptance checklist)"}
+	if t == nil {
+		return nil, fmt.Errorf("task not found on board: %s", taskID)
 	}
 
-	// Deterministic plan template. No AI; meant for workshop + refinement.
-	var sb strings.Builder
-	sb.WriteString("## Plan (Draft)\n\n")
-	sb.WriteString("### Approach\n\n")
-	sb.WriteString("- (fill in)\n\n")
-	sb.WriteString("### Work Breakdown\n\n")
-	sb.WriteString("- (fill in)\n\n")
-	sb.WriteString("### Risks / Open Questions\n\n")
-	sb.WriteString("- (fill in)\n\n")
-	sb.WriteString("### Acceptance Checklist\n\n")
-	sb.WriteString(strings.Join(checklist, "\n"))
-	sb.WriteString("\n")
-	return sb.String()
-}
-
-func extractSection(md string, heading string) string {
-	needle := "## " + heading
-	i := strings.Index(md, needle)
-	if i < 0 {
-		return ""
+	now := time.Now()
+	if err := ensureTaskScaffold(root, taskID); err != nil {
+		return nil, err
 	}
-	rest := md[i+len(needle):]
-	// Find next "## " heading.
-	next := strings.Index(rest, "\n## ")
-	if next < 0 {
-		return strings.TrimSpace(rest)
+	if err := writeAgentPacket(root, t, now); err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(rest[:next])
-}
 
-func splitHazelConfig(md string) (cfg taskHazelMeta, has bool, without string, cfgBlock string, err error) {
-	fm, ok, without, err := parseHazelConfigBlock(md)
+	exit, logPath, err := runAgentCommandMode(ctx, root, cfg, taskID, now, "plan")
 	if err != nil {
-		return taskHazelMeta{}, false, md, "", err
+		return nil, err
 	}
-	if !ok {
-		return taskHazelMeta{}, false, md, "", nil
-	}
-	block, err := formatHazelConfigBlock(fm)
-	if err != nil {
-		return taskHazelMeta{}, false, md, "", fmt.Errorf("format hazel config: %w", err)
-	}
-	return fm.Hazel, true, without, strings.TrimLeft(block, "\n"), nil
+	return &RunResult{
+		DispatchedTaskID: taskID,
+		AgentExitCode:    &exit,
+		RunLogPath:       logPath,
+	}, nil
 }
 

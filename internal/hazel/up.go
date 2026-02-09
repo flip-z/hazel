@@ -51,7 +51,6 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	mux.HandleFunc("/mutate/new_task", func(w http.ResponseWriter, r *http.Request) { uiMutateNewTask(w, r, root) })
 	mux.HandleFunc("/mutate/task_md", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskMD(w, r, root) })
 	mux.HandleFunc("/mutate/task_color", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskColor(w, r, root) })
-	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
 
 	server := &http.Server{
 		Handler:           mux,
@@ -436,27 +435,6 @@ func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string) {
 	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
 }
 
-func uiMutatePlan(w http.ResponseWriter, r *http.Request, root string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	id := strings.TrimSpace(r.FormValue("id"))
-	if id == "" {
-		http.Error(w, "invalid id", http.StatusBadRequest)
-		return
-	}
-	if err := PlanTask(root, id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
-}
-
 func bumpBoardUpdatedAt(root, id string) error {
 	var b Board
 	if err := readYAMLFile(boardPath(root), &b); err != nil {
@@ -755,13 +733,7 @@ const uiTaskHTML = `<!doctype html>
         <h2>Task</h2>
         <div class="editbar">
           <span class="pill" style="box-shadow: inset 0 0 0 3px {{.RingHex}};">Priority: {{if .Priority}}{{.Priority}}{{else}}Unset{{end}}</span>
-          <div class="row">
-            <form action="/mutate/plan" method="post">
-              <input type="hidden" name="id" value="{{.Task.ID}}" />
-              <button class="ghost" type="submit">Plan</button>
-            </form>
-            <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
-          </div>
+          <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
         </div>
         <div class="md">{{.TaskHTML}}</div>
         <div id="hzEditor" class="editor">

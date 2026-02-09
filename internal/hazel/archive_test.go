@@ -9,7 +9,7 @@ import (
 
 func TestArchiveDoneMovesTasksAndUpdatesBoard(t *testing.T) {
 	root := t.TempDir()
-	if err := InitRepo(nil, root); err != nil { // ctx unused
+	if err := InitRepo(nil, root, InitOptions{}); err != nil { // ctx unused
 		t.Fatalf("init repo: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestArchiveDoneMovesTasksAndUpdatesBoard(t *testing.T) {
 
 func TestArchiveDoneBeforeFilter(t *testing.T) {
 	root := t.TempDir()
-	if err := InitRepo(nil, root); err != nil {
+	if err := InitRepo(nil, root, InitOptions{}); err != nil {
 		t.Fatalf("init repo: %v", err)
 	}
 
@@ -76,4 +76,3 @@ func TestArchiveDoneBeforeFilter(t *testing.T) {
 		t.Fatalf("unexpected archived ids: %#v", res.ArchivedIDs)
 	}
 }
-

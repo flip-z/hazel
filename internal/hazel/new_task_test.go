@@ -9,7 +9,7 @@ import (
 
 func TestCreateNewTaskAllocatesIDAndScaffold(t *testing.T) {
 	root := t.TempDir()
-	if err := InitRepo(nil, root); err != nil {
+	if err := InitRepo(nil, root, InitOptions{}); err != nil {
 		t.Fatalf("init repo: %v", err)
 	}
 

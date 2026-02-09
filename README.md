@@ -17,14 +17,6 @@ go install ./cmd/hazel
 
 Ensure your Go bin dir is on `PATH` (usually `$(go env GOPATH)/bin` or `$GOBIN`).
 
-## Planning Mode
-
-Hazel includes a deterministic planning helper (no AI) to help workshop a BACKLOG ticket before it is READY:
-
-```sh
-hazel plan HZ-0001
-```
-
 ## Releases + Homebrew
 
 This repo includes:

@@ -8,7 +8,11 @@ import (
 	"strings"
 )
 
-func InitRepo(ctx context.Context, root string) error {
+type InitOptions struct {
+	AgentPreset string // codex|none
+}
+
+func InitRepo(ctx context.Context, root string, opt InitOptions) error {
 	_ = ctx
 
 	if err := ensureDir(hazelDir(root)); err != nil {
@@ -31,6 +35,19 @@ func InitRepo(ctx context.Context, root string) error {
 		cfg := defaultConfig()
 		if err := writeYAMLFile(configPath(root), &cfg); err != nil {
 			return err
+		}
+	}
+
+	// Agent preset wiring (best-effort; never blocks init if it can't write).
+	if strings.ToLower(strings.TrimSpace(opt.AgentPreset)) == "codex" {
+		var cfg Config
+		if err := readYAMLFile(configPath(root), &cfg); err == nil {
+			agentScript := filepath.Join(hazelDir(root), "agent.sh")
+			if !exists(agentScript) {
+				_ = writeFileAtomic(agentScript, []byte(templateAgentSh), 0o755)
+			}
+			cfg.AgentCommand = ".hazel/agent.sh"
+			_ = writeYAMLFile(configPath(root), &cfg)
 		}
 	}
 
@@ -135,21 +152,19 @@ Hazel is a filesystem-first work queue. The repository is the source of truth.
 2. Create tasks from the UI (BACKLOG).
 3. Move a task to READY when the intent is complete.
 
-## Planning Mode
+## Setup Wizard
 
-Hazel includes a deterministic planning helper (no AI) to help workshop a BACKLOG ticket before it is READY.
+Hazel init can configure an agent preset:
 
-It writes/updates a "Plan (Draft)" block inside task.md between markers:
+  hazel init --agent codex
 
-  <!-- HAZEL-PLAN START -->
-  ...
-  <!-- HAZEL-PLAN END -->
+This writes .hazel/agent.sh and sets .hazel/config.yaml agent_command so hazel run and hazel plan work out of the box.
 
-You can run it from the CLI:
+## Plan Workflow (Codex)
+
+Planning is a separate workflow from implementation. It does not edit task.md; it writes planning output to impl.md.
 
   hazel plan HZ-0001
-
-Or from the task page via the Plan button.
 
 ## Automation
 
@@ -244,6 +259,38 @@ Then users install:
 
   brew tap flip-z/hazel
   brew install hazel-cli
+`
+
+const templateAgentSh = `#!/bin/sh
+set -eu
+
+mode="${HAZEL_MODE:-implement}"
+
+if ! command -v codex >/dev/null 2>&1; then
+  echo "codex not found on PATH" >&2
+  exit 1
+fi
+
+if [ -z "${HAZEL_TASK_ID:-}" ] || [ -z "${HAZEL_TASK_DIR:-}" ]; then
+  echo "HAZEL_TASK_ID/HAZEL_TASK_DIR not set" >&2
+  exit 1
+fi
+
+task_md="$HAZEL_TASK_DIR/task.md"
+impl_md="$HAZEL_TASK_DIR/impl.md"
+
+case "$mode" in
+  plan)
+    codex exec "Follow AGENTS.md. PLAN MODE: Do not edit task.md. Read $task_md. Write a clear implementation plan into $impl_md. Do not change repo code in plan mode."
+    ;;
+  implement)
+    codex exec "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    ;;
+  *)
+    echo "unknown HAZEL_MODE: $mode" >&2
+    exit 2
+    ;;
+esac
 `
 
 const defaultAgentsMD = `# AGENTS
