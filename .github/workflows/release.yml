@@ -30,5 +30,7 @@ jobs:
           version: latest
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          # NOTE: GitHub's default GITHUB_TOKEN typically cannot push to a separate Homebrew tap repo.
+          # Create a PAT with access to the tap repo and add it as a secret (recommended name: HOMEBREW_TAP_GITHUB_TOKEN).
+          # If unset, this falls back to the default token (releases will publish, but the brew formula publish may fail).
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN != '' && secrets.HOMEBREW_TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
