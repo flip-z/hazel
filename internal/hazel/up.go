@@ -774,6 +774,16 @@ func uiRuns(w http.ResponseWriter, r *http.Request, root string, title string, r
 					exit = fmtInt(int(v))
 				}
 			}
+		} else {
+			// Backfill for older logs (before metadata existed): infer mode from the log body.
+			if lb, lerr := os.ReadFile(filepath.Join(dir, name)); lerr == nil {
+				s := string(lb)
+				if strings.Contains(s, "PLAN MODE:") {
+					mode = "plan"
+				} else if strings.Contains(s, "IMPLEMENT MODE:") {
+					mode = "implement"
+				}
+			}
 		}
 		rows = append(rows, row{
 			Name:     base,
@@ -875,8 +885,8 @@ const uiRunsHTML = `<!doctype html>
               <tr>
                 <td><a class="link" href="/runs/{{.Name}}">{{.Name}}</a></td>
                 <td>{{.TaskID}}</td>
-                <td>{{if .Mode}}{{.Mode}}{{else}}?{{end}}</td>
-                <td>{{if .ExitCode}}{{.ExitCode}}{{else}}?{{end}}</td>
+                <td>{{if .Mode}}{{.Mode}}{{else}}-{{end}}</td>
+                <td>{{if .ExitCode}}{{.ExitCode}}{{else}}-{{end}}</td>
               </tr>
             {{end}}
           </tbody>

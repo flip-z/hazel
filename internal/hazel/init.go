@@ -188,6 +188,27 @@ To run it periodically, choose one:
 2. Cron (example: every minute):
      */1 * * * * cd /path/to/repo && hazel run >> .hazel/cron.log 2>&1
 
+## Git Hygiene (Recommended)
+
+By default, Hazel stores durable project state under .hazel/ (board + task history).
+You probably want to commit:
+
+- .hazel/board.yaml
+- .hazel/config.yaml
+- .hazel/tasks/**/task.md
+- .hazel/tasks/**/impl.md
+
+And ignore ephemeral/generated files:
+
+  .hazel/export/
+  .hazel/runs/
+  .hazel/archive/
+  .hazel/server.json
+  .hazel/server.log
+  .hazel/run_state.json
+  .hazel/lock
+  .hazel/tasks/**/agent_packet.md
+
 ## Hooking Up An Agent (Codex/Claude/etc.)
 
 Edit .hazel/config.yaml and set:

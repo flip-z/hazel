@@ -1,13 +1,5 @@
 bin/
 *.tmp
 
-# Persisted state (board/config/tasks) lives in .hazel/.
-# Ignore only ephemeral/generated files.
-.hazel/export/
-.hazel/runs/
-.hazel/archive/
-.hazel/server.json
-.hazel/server.log
-.hazel/run_state.json
-.hazel/lock
-.hazel/tasks/**/agent_packet.md
+# This repo is Hazel itself; its local .hazel/ is dev state.
+.hazel/
