@@ -51,6 +51,7 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	mux.HandleFunc("/mutate/new_task", func(w http.ResponseWriter, r *http.Request) { uiMutateNewTask(w, r, root) })
 	mux.HandleFunc("/mutate/task_md", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskMD(w, r, root) })
 	mux.HandleFunc("/mutate/task_color", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskColor(w, r, root) })
+	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
 
 	server := &http.Server{
 		Handler:           mux,
@@ -435,6 +436,31 @@ func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string) {
 	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
 }
 
+func uiMutatePlan(w http.ResponseWriter, r *http.Request, root string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	// Run the same workflow as `hazel plan`, but from the UI.
+	// Do it asynchronously so the request doesn't hang for long-running agents.
+	go func() { _, _ = Plan(context.Background(), root, id) }()
+
+	if r.Header.Get("X-Hazel-Ajax") == "1" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/task/"+id+"?plan=started", http.StatusSeeOther)
+}
+
 func bumpBoardUpdatedAt(root, id string) error {
 	var b Board
 	if err := readYAMLFile(boardPath(root), &b); err != nil {
@@ -731,10 +757,16 @@ const uiTaskHTML = `<!doctype html>
     <div class="split">
       <section class="panel">
         <h2>Task</h2>
-        <div class="editbar">
-          <span class="pill" style="box-shadow: inset 0 0 0 3px {{.RingHex}};">Priority: {{if .Priority}}{{.Priority}}{{else}}Unset{{end}}</span>
-          <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
-        </div>
+	        <div class="editbar">
+	          <span class="pill" style="box-shadow: inset 0 0 0 3px {{.RingHex}};">Priority: {{if .Priority}}{{.Priority}}{{else}}Unset{{end}}</span>
+	          <div class="row">
+	            <form action="/mutate/plan" method="post" onsubmit="return hazelPlan(this)">
+	              <input type="hidden" name="id" value="{{.Task.ID}}" />
+	              <button class="ghost" type="submit">Plan</button>
+	            </form>
+	            <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
+	          </div>
+	        </div>
         <div class="md">{{.TaskHTML}}</div>
         <div id="hzEditor" class="editor">
           <form action="/mutate/task_md" method="post">
@@ -765,6 +797,16 @@ const uiTaskHTML = `<!doctype html>
         const ta = el.querySelector("textarea");
         if (ta) ta.focus();
       }
+    }
+
+    function hazelPlan(form) {
+      const btn = form.querySelector("button[type='submit']");
+      if (btn) { btn.disabled = true; btn.textContent = "Planning..."; }
+      const fd = new FormData(form);
+      fetch(form.action, { method: "POST", body: new URLSearchParams(fd), headers: { "X-Hazel-Ajax": "1" } })
+        .then(() => setTimeout(() => location.reload(), 1500))
+        .catch(() => { if (btn) { btn.disabled = false; btn.textContent = "Plan"; }});
+      return false;
     }
   </script>
 </body>
