@@ -62,7 +62,11 @@ func SpawnBackgroundServer(ctx context.Context, root string, opt SpawnOptions) (
 		if err == nil && st.PID != 0 && st.Addr != "" && pidAlive(st.PID) {
 			return st.PID, st.Addr, nil
 		}
+		// If the child died quickly, surface logs.
+		if !pidAlive(cmd.Process.Pid) {
+			return cmd.Process.Pid, "", fmt.Errorf("server exited; see %s", logPath)
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return cmd.Process.Pid, "", fmt.Errorf("server did not start (no state file written)")
+	return cmd.Process.Pid, "", fmt.Errorf("server did not start (no state file written); see %s", logPath)
 }

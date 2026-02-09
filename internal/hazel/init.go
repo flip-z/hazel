@@ -135,6 +135,22 @@ Hazel is a filesystem-first work queue. The repository is the source of truth.
 2. Create tasks from the UI (BACKLOG).
 3. Move a task to READY when the intent is complete.
 
+## Planning Mode
+
+Hazel includes a deterministic planning helper (no AI) to help workshop a BACKLOG ticket before it is READY.
+
+It writes/updates a "Plan (Draft)" block inside task.md between markers:
+
+  <!-- HAZEL-PLAN START -->
+  ...
+  <!-- HAZEL-PLAN END -->
+
+You can run it from the CLI:
+
+  hazel plan HZ-0001
+
+Or from the task page via the Plan button.
+
 ## Automation
 
 Hazel's automation tick is:

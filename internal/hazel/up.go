@@ -37,15 +37,21 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	}
 
 	schedulerEnabled := opt.Scheduler
+	repoSlug := readRepoSlugFromGitConfig(root)
+	title := projectTitle(root)
+	if repoSlug != "" {
+		title = repoSlug
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { uiBoard(w, r, root, cfg, schedulerEnabled) })
-	mux.HandleFunc("/task/", func(w http.ResponseWriter, r *http.Request) { uiTask(w, r, root, cfg, schedulerEnabled) })
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { uiBoard(w, r, root, cfg, schedulerEnabled, title, repoSlug) })
+	mux.HandleFunc("/task/", func(w http.ResponseWriter, r *http.Request) { uiTask(w, r, root, cfg, schedulerEnabled, title, repoSlug) })
 	mux.HandleFunc("/mutate/status", func(w http.ResponseWriter, r *http.Request) { uiMutateStatus(w, r, root) })
 	mux.HandleFunc("/mutate/priority", func(w http.ResponseWriter, r *http.Request) { uiMutatePriority(w, r, root) })
 	mux.HandleFunc("/mutate/new_task", func(w http.ResponseWriter, r *http.Request) { uiMutateNewTask(w, r, root) })
 	mux.HandleFunc("/mutate/task_md", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskMD(w, r, root) })
 	mux.HandleFunc("/mutate/task_color", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskColor(w, r, root) })
+	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
 
 	server := &http.Server{
 		Handler:           mux,
@@ -100,7 +106,7 @@ func schedulerLoop(ctx context.Context, root string, cfg Config) {
 	}
 }
 
-func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, schedulerEnabled bool) {
+func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, schedulerEnabled bool, title string, repoSlug string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -167,10 +173,13 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, sc
 		"ColCount":    len(visible),
 		"Scheduler":   schedulerEnabled,
 		"IntervalSec": cfg.RunIntervalSeconds,
+		"Title":       title,
+		"RepoSlug":    repoSlug,
+		"HazelURL":    hazelPoweredByURL(),
 	})
 }
 
-func uiTask(w http.ResponseWriter, r *http.Request, root string, _ Config, _ bool) {
+func uiTask(w http.ResponseWriter, r *http.Request, root string, _ Config, _ bool, title string, repoSlug string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -251,6 +260,9 @@ func uiTask(w http.ResponseWriter, r *http.Request, root string, _ Config, _ boo
 		"RingHex":   ringHexForPriorityLabel(priority),
 		"Priority":  priority,
 		"AllPrios":  []string{"", "HIGH", "MEDIUM", "LOW"},
+		"Title":     title,
+		"RepoSlug":  repoSlug,
+		"HazelURL":  hazelPoweredByURL(),
 	})
 }
 
@@ -424,6 +436,27 @@ func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string) {
 	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
 }
 
+func uiMutatePlan(w http.ResponseWriter, r *http.Request, root string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if err := PlanTask(root, id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
+}
+
 func bumpBoardUpdatedAt(root, id string) error {
 	var b Board
 	if err := readYAMLFile(boardPath(root), &b); err != nil {
@@ -493,14 +526,14 @@ const uiBoardHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hazel</title>
+  <title>{{.Title}}</title>
   <style>
     :root { --bg:#0b1020; --panel:#101a33; --card:#0f1830; --text:#e9eefc; --muted:#aab4d6; --accent:#86f7c5; --danger:#ff6b6b; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 500px at 20% 0%, #14214a 0%, var(--bg) 60%); color:var(--text); }
-    header { padding:16px 24px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.6); backdrop-filter: blur(8px); position: sticky; top:0; }
-    header .row { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
-    h1 { margin:0; font-size:16px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
+    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
+    header .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    h1 { margin:0; font-size:15px; letter-spacing:.06em; text-transform:uppercase; color: rgba(233,238,252,.82); }
     .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px; }
     .actions a { color:var(--accent); text-decoration:none; border:1px solid rgba(134,247,197,.35); padding:6px 10px; border-radius:999px; }
     .actions form { display:flex; gap:8px; align-items:center; margin:0; }
@@ -516,36 +549,44 @@ const uiBoardHTML = `<!doctype html>
     .colmenu label:hover { background: rgba(255,255,255,.04); }
     .colmenu input { transform: translateY(1px); }
     .colmenu button { width:100%; margin-top:8px; }
-    main { padding:18px 18px 28px; }
-    .board { display:grid; gap:12px; grid-template-columns: repeat(var(--cols), minmax(220px, 1fr)); overflow-x:auto; padding-bottom:12px; }
-    .col { background: rgba(16,26,51,.85); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px; min-height: 70vh; }
-    .col h2 { margin:4px 6px 10px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); display:flex; justify-content:space-between; }
-    .card { padding:10px 10px; margin:8px 4px; border-radius:10px; border:1px solid rgba(255,255,255,.09); background: rgba(15,24,48,.92); }
+    .pilltop { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); padding:7px 10px; border-radius: 999px; color: rgba(233,238,252,.78); }
+    .dot { width:8px; height:8px; border-radius:999px; background: rgba(134,247,197,.9); box-shadow: 0 0 0 4px rgba(134,247,197,.12); }
+    main { padding:16px 16px 20px; }
+    .board { display:grid; gap:12px; grid-template-columns: repeat(var(--cols), minmax(250px, 1fr)); overflow-x:auto; padding-bottom:12px; }
+    .col { background: rgba(16,26,51,.78); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:10px; min-height: 70vh; }
+    .col h2 { margin:4px 6px 10px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: rgba(233,238,252,.62); display:flex; justify-content:space-between; }
+    .card { padding:12px 12px; margin:8px 4px; border-radius:12px; border:1px solid rgba(255,255,255,.10); background: rgba(15,24,48,.92); }
     .id a { color: rgba(233,238,252,.85); text-decoration:none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
-    .title { margin-top:6px; font-size:13px; line-height:1.35; }
+    .title { margin-top:8px; font-size:13px; line-height:1.35; color: rgba(233,238,252,.92); }
     .meta { margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .meta form { margin:0; display:flex; gap:6px; align-items:center; }
-    select, input { background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color: var(--text); padding:6px 8px; border-radius:8px; font-size:12px; }
+    select, input { background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color: var(--text); padding:7px 9px; border-radius:10px; font-size:12px; }
     button { background: rgba(134,247,197,.12); border:1px solid rgba(134,247,197,.35); color: var(--text); padding:6px 8px; border-radius:8px; font-size:12px; cursor:pointer; }
     button:hover { box-shadow: 0 0 0 3px rgba(134,247,197,.08); }
-    .hint { margin-top:12px; color: rgba(233,238,252,.55); font-size:12px; }
+    .hint { margin-top:10px; color: rgba(233,238,252,.50); font-size:12px; }
     .card.dragging { opacity: .6; }
-    .card { background: linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.55)), var(--cardbg, rgba(15,24,48,.92)); box-shadow: inset 0 0 0 3px var(--ring, rgba(255,255,255,0)); }
+    .card { background: linear-gradient(180deg, rgba(0,0,0,.62), rgba(0,0,0,.62)), var(--cardbg, rgba(15,24,48,.92)); box-shadow: inset 0 0 0 3px var(--ring, rgba(255,255,255,0)); }
     .col.dropover { border-color: rgba(134,247,197,.45); box-shadow: 0 0 0 3px rgba(134,247,197,.10); }
-    footer { padding: 14px 18px 22px; color: rgba(233,238,252,.60); font-size:12px; }
-    .tick { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); padding:8px 10px; border-radius: 12px; }
-    .dot { width:8px; height:8px; border-radius:999px; background: rgba(134,247,197,.9); box-shadow: 0 0 0 4px rgba(134,247,197,.12); }
+    footer { padding: 12px 16px 18px; color: rgba(233,238,252,.50); font-size:12px; }
+    footer a { color: rgba(134,247,197,.85); text-decoration:none; }
+    footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <header>
     <div class="row">
-      <h1>Hazel</h1>
+      <div>
+        <h1>{{.Title}}</h1>
+        <div class="hint">{{if .RepoSlug}}{{.RepoSlug}}{{else}}Powered by Hazel{{end}}</div>
+      </div>
       <div class="actions">
         <form action="/mutate/new_task" method="post">
           <input type="text" name="title" placeholder="New backlog item title" required />
           <button type="submit">Create</button>
         </form>
+        {{if and .Scheduler (gt .IntervalSec 0)}}
+          <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
+        {{end}}
         <details class="cols">
           <summary>Choose columns</summary>
           <form class="colmenu" action="/" method="get">
@@ -576,14 +617,13 @@ const uiBoardHTML = `<!doctype html>
               <div class="meta">
                 <form action="/mutate/status" method="post">
                   <input type="hidden" name="id" value="{{.Task.ID}}" />
-                  <select name="status">
+                  <select name="status" onchange="hazelSubmit(this.form)">
                     <option {{if eq .Task.Status "BACKLOG"}}selected{{end}}>BACKLOG</option>
                     <option {{if eq .Task.Status "READY"}}selected{{end}}>READY</option>
                     <option {{if eq .Task.Status "ACTIVE"}}selected{{end}}>ACTIVE</option>
                     <option {{if eq .Task.Status "REVIEW"}}selected{{end}}>REVIEW</option>
                     <option {{if eq .Task.Status "DONE"}}selected{{end}}>DONE</option>
                   </select>
-                  <button type="submit">Set</button>
                 </form>
                 <form action="/mutate/priority" method="post">
                   <input type="hidden" name="id" value="{{.Task.ID}}" />
@@ -601,14 +641,9 @@ const uiBoardHTML = `<!doctype html>
       {{end}}
     </div>
   </main>
-  {{if and .Scheduler (gt .IntervalSec 0)}}
   <footer>
-    <div class="tick">
-      <span class="dot"></span>
-      <span>Scheduler enabled. Next tick in <span id="hzNextTick">{{.IntervalSec}}</span>s (interval {{.IntervalSec}}s).</span>
-    </div>
+    <span>Powered by <a href="{{.HazelURL}}">Hazel</a></span>
   </footer>
-  {{end}}
   <script>
     function hazelSubmit(form) {
       const fd = new FormData(form);
@@ -670,12 +705,12 @@ const uiTaskHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{.Task.ID}} - {{.Task.Title}}</title>
+  <title>{{.Title}} - {{.Task.ID}}</title>
   <style>
     :root { --bg:#0b1020; --panel:#101a33; --text:#e9eefc; --muted:#aab4d6; --link:#86f7c5; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 500px at 20% 0%, #14214a 0%, var(--bg) 60%); color:var(--text); }
-    header { padding:16px 24px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.6); backdrop-filter: blur(8px); position: sticky; top:0; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
+    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
     header a { color: var(--link); text-decoration:none; font-size:12px; }
     h1 { margin:6px 0 0; font-size:18px; }
     .meta { margin-top:6px; color: rgba(233,238,252,.6); font-size:12px; }
@@ -701,6 +736,9 @@ const uiTaskHTML = `<!doctype html>
     .ghost:hover { box-shadow: 0 0 0 3px rgba(134,247,197,.08); }
     .editor { display:none; margin-top:10px; }
     .editor.on { display:block; }
+    footer { padding: 12px 16px 18px; color: rgba(233,238,252,.50); font-size:12px; }
+    footer a { color: rgba(134,247,197,.85); text-decoration:none; }
+    footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -717,7 +755,13 @@ const uiTaskHTML = `<!doctype html>
         <h2>Task</h2>
         <div class="editbar">
           <span class="pill" style="box-shadow: inset 0 0 0 3px {{.RingHex}};">Priority: {{if .Priority}}{{.Priority}}{{else}}Unset{{end}}</span>
-          <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
+          <div class="row">
+            <form action="/mutate/plan" method="post">
+              <input type="hidden" name="id" value="{{.Task.ID}}" />
+              <button class="ghost" type="submit">Plan</button>
+            </form>
+            <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
+          </div>
         </div>
         <div class="md">{{.TaskHTML}}</div>
         <div id="hzEditor" class="editor">
@@ -737,6 +781,9 @@ const uiTaskHTML = `<!doctype html>
       </section>
     </div>
   </main>
+  <footer>
+    <span>Powered by <a href="{{.HazelURL}}">Hazel</a></span>
+  </footer>
   <script>
     function hazelToggleEdit() {
       const el = document.getElementById("hzEditor");

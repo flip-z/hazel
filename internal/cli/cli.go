@@ -34,6 +34,8 @@ func Run(ctx context.Context, args []string) int {
 		return cmdUp(ctx, args[1:])
 	case "down":
 		return cmdDown(ctx, args[1:])
+	case "plan":
+		return cmdPlan(ctx, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		usage(os.Stderr)
@@ -49,6 +51,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  hazel up")
 	fmt.Fprintln(w, "  hazel down")
 	fmt.Fprintln(w, "  hazel run")
+	fmt.Fprintln(w, "  hazel plan HZ-0001")
 	fmt.Fprintln(w, "  hazel export --html")
 	fmt.Fprintln(w, "  hazel archive [--before DATE]")
 	fmt.Fprintln(w, "  hazel doctor")
@@ -282,5 +285,30 @@ func cmdDown(ctx context.Context, args []string) int {
 		return 0
 	}
 	fmt.Printf("Stopped pid %d\n", res.PID)
+	return 0
+}
+
+func cmdPlan(ctx context.Context, args []string) int {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: hazel plan HZ-0001")
+		return 2
+	}
+	id := fs.Arg(0)
+
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := hazel.PlanTask(root, id); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("Planned %s\n", id)
 	return 0
 }
