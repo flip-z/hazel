@@ -42,6 +42,5 @@ Users install:
 
 ```sh
 brew tap <owner>/hazel
-brew install hazel
+brew install hazel-cli
 ```
-

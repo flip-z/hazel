@@ -45,7 +45,9 @@ release:
   draft: false
 
 brews:
-  - name: hazel
+  # `hazel` is already used by the Noodlesoft Hazel app cask in homebrew/cask.
+  # Name the formula `hazel-cli` to avoid collisions, while still installing the `hazel` binary.
+  - name: hazel-cli
     ids:
       - default
     homepage: "https://github.com/flip-z/hazel"

@@ -227,7 +227,7 @@ Hazel is a binary, so the standard approach is:
 Then users install:
 
   brew tap <owner>/hazel
-  brew install hazel
+  brew install hazel-cli
 `
 
 const defaultAgentsMD = `# AGENTS
