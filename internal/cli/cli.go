@@ -321,11 +321,12 @@ func cmdDown(ctx context.Context, args []string) int {
 func cmdPlan(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	tail := fs.Int("tail", 40, "print last N lines from run log (0 to disable)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: hazel plan HZ-0001")
+		fmt.Fprintln(os.Stderr, "usage: hazel plan [--tail N] HZ-0001")
 		return 2
 	}
 	id := fs.Arg(0)
@@ -340,8 +341,22 @@ func cmdPlan(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	fmt.Printf("Planned %s\n", id)
+	if res.AgentExitCode != nil {
+		fmt.Printf("Agent exit: %d\n", *res.AgentExitCode)
+	}
 	if res.RunLogPath != "" {
 		fmt.Printf("Run log: %s\n", res.RunLogPath)
+		if *tail > 0 {
+			if s, err := tailFileLines(res.RunLogPath, *tail, 128*1024); err == nil && strings.TrimSpace(s) != "" {
+				fmt.Println()
+				fmt.Println("---- run log (tail) ----")
+				fmt.Print(s)
+				if s[len(s)-1] != '\n' {
+					fmt.Println()
+				}
+			}
+		}
 	}
 	return 0
 }
