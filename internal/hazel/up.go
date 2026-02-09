@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	mux.HandleFunc("/mutate/task_md", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskMD(w, r, root) })
 	mux.HandleFunc("/mutate/task_color", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskColor(w, r, root) })
 	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
+	mux.HandleFunc("/mutate/interval", func(w http.ResponseWriter, r *http.Request) { uiMutateInterval(w, r, root) })
 
 	server := &http.Server{
 		Handler:           mux,
@@ -77,7 +79,7 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	}
 
 	if opt.Scheduler {
-		go schedulerLoop(ctx, root, cfg)
+		go schedulerLoop(ctx, root)
 	}
 
 	go func() {
@@ -107,18 +109,23 @@ func agentUI(cfg Config) (name string, tooltip string) {
 	return "custom", ac
 }
 
-func schedulerLoop(ctx context.Context, root string, cfg Config) {
-	interval := time.Duration(cfg.RunIntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 60 * time.Second
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
+func schedulerLoop(ctx context.Context, root string) {
 	for {
+		// Re-read config each tick so UI changes take effect without restart.
+		var cfg Config
+		if err := readYAMLFile(configPath(root), &cfg); err != nil || cfg.Version == 0 {
+			cfg = defaultConfig()
+		}
+		interval := time.Duration(cfg.RunIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-t.C:
+		case <-timer.C:
 			_, _ = RunTick(ctx, root, RunOptions{})
 		}
 	}
@@ -129,6 +136,10 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, sc
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Refresh config per request (allows UI changes to config.yaml to show without restart).
+	latest, _ := loadConfigOrDefault(root)
+	cfg = latest
 
 	var b Board
 	if err := readYAMLFile(boardPath(root), &b); err != nil {
@@ -206,6 +217,8 @@ func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, _ b
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	latest, _ := loadConfigOrDefault(root)
+	cfg = latest
 	id := strings.TrimPrefix(r.URL.Path, "/task/")
 	id = strings.Trim(id, "/")
 	if id == "" {
@@ -291,6 +304,17 @@ func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, _ b
 	})
 }
 
+func loadConfigOrDefault(root string) (Config, error) {
+	var cfg Config
+	if err := readYAMLFile(configPath(root), &cfg); err != nil {
+		return defaultConfig(), err
+	}
+	if cfg.Version == 0 {
+		cfg = defaultConfig()
+	}
+	return cfg, nil
+}
+
 func uiMutateStatus(w http.ResponseWriter, r *http.Request, root string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -368,6 +392,35 @@ func uiMutatePriority(w http.ResponseWriter, r *http.Request, root string) {
 		return
 	}
 	_ = bumpBoardUpdatedAt(root, id)
+	if r.Header.Get("X-Hazel-Ajax") == "1" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func uiMutateInterval(w http.ResponseWriter, r *http.Request, root string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	raw := strings.TrimSpace(r.FormValue("interval"))
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec < 5 {
+		http.Error(w, "interval must be an integer >= 5 seconds", http.StatusBadRequest)
+		return
+	}
+
+	cfg, _ := loadConfigOrDefault(root)
+	cfg.RunIntervalSeconds = sec
+	if err := writeYAMLFile(configPath(root), &cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if r.Header.Get("X-Hazel-Ajax") == "1" {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -578,6 +631,8 @@ const uiBoardHTML = `<!doctype html>
     .colmenu label:hover { background: rgba(255,255,255,.04); }
     .colmenu input { transform: translateY(1px); }
     .colmenu button { width:100%; margin-top:8px; }
+    .colmenu .row { display:flex; gap:8px; align-items:center; }
+    .colmenu .row input[type="number"] { width: 96px; }
     .pilltop { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); padding:7px 10px; border-radius: 999px; color: rgba(233,238,252,.78); }
     .dot { width:8px; height:8px; border-radius:999px; background: rgba(134,247,197,.9); box-shadow: 0 0 0 4px rgba(134,247,197,.12); }
     main { padding:16px 16px 20px; }
@@ -615,6 +670,17 @@ const uiBoardHTML = `<!doctype html>
         <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
         {{if and .Scheduler (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
+          <details class="cols">
+            <summary>Schedule</summary>
+            <form class="colmenu" action="/mutate/interval" method="post">
+              <div class="hint" style="margin: 2px 6px 8px;">Tick interval (seconds)</div>
+              <div class="row" style="padding: 0 6px 6px;">
+                <input type="number" name="interval" min="5" step="1" value="{{.IntervalSec}}" />
+                <button type="submit">Set</button>
+              </div>
+              <div class="hint" style="margin: 0 6px 2px;">Applies without restarting.</div>
+            </form>
+          </details>
         {{end}}
         <details class="cols">
           <summary>Choose columns</summary>
