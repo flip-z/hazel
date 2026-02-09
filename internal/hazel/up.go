@@ -89,6 +89,24 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	return addr, nil
 }
 
+func agentUI(cfg Config) (name string, tooltip string) {
+	ac := strings.TrimSpace(cfg.AgentCommand)
+	if ac == "" {
+		return "none", ""
+	}
+	// Our init wizard writes `.hazel/agent.sh` for Codex.
+	if strings.Contains(ac, ".hazel/agent.sh") {
+		return "codex", ac
+	}
+	// Heuristic: if the command begins with `codex`, call it codex.
+	if fields := strings.Fields(ac); len(fields) > 0 {
+		if strings.EqualFold(fields[0], "codex") {
+			return "codex", ac
+		}
+	}
+	return "custom", ac
+}
+
 func schedulerLoop(ctx context.Context, root string, cfg Config) {
 	interval := time.Duration(cfg.RunIntervalSeconds) * time.Second
 	if interval <= 0 {
@@ -156,6 +174,8 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, sc
 		})
 	}
 
+	agentName, agentTip := agentUI(cfg)
+
 	tpl := template.Must(template.New("board").Funcs(template.FuncMap{
 		"intp": func(p *int) string { // legacy; kept for template compatibility if extended later
 			if p == nil {
@@ -176,10 +196,12 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, sc
 		"Title":       title,
 		"RepoSlug":    repoSlug,
 		"HazelURL":    hazelPoweredByURL(),
+		"AgentName":   agentName,
+		"AgentTip":    agentTip,
 	})
 }
 
-func uiTask(w http.ResponseWriter, r *http.Request, root string, _ Config, _ bool, title string, repoSlug string) {
+func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, _ bool, title string, repoSlug string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -249,6 +271,7 @@ func uiTask(w http.ResponseWriter, r *http.Request, root string, _ Config, _ boo
 	if p, ok := getTaskPriorityFromMD(taskMD); ok {
 		priority = p
 	}
+	agentName, agentTip := agentUI(cfg)
 	_ = tpl.Execute(w, map[string]any{
 		"Task":      task,
 		"TaskMD":    taskMD,
@@ -263,6 +286,8 @@ func uiTask(w http.ResponseWriter, r *http.Request, root string, _ Config, _ boo
 		"Title":     title,
 		"RepoSlug":  repoSlug,
 		"HazelURL":  hazelPoweredByURL(),
+		"AgentName": agentName,
+		"AgentTip":  agentTip,
 	})
 }
 
@@ -581,13 +606,13 @@ const uiBoardHTML = `<!doctype html>
     <div class="row">
       <div>
         <h1>{{.Title}}</h1>
-        <div class="hint">{{if .RepoSlug}}{{.RepoSlug}}{{else}}Powered by Hazel{{end}}</div>
       </div>
       <div class="actions">
         <form action="/mutate/new_task" method="post">
           <input type="text" name="title" placeholder="New backlog item title" required />
           <button type="submit">Create</button>
         </form>
+        <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
         {{if and .Scheduler (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
         {{end}}
@@ -749,7 +774,7 @@ const uiTaskHTML = `<!doctype html>
   <header>
     <div class="topbar">
       <a class="backbtn" href="/">Back to board</a>
-      <div class="meta">Status: {{.Task.Status}} | Updated: {{.Task.UpdatedAt}}</div>
+      <div class="meta"><span {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span> | Status: {{.Task.Status}} | Updated: {{.Task.UpdatedAt}}</div>
     </div>
     <h1>{{.Task.ID}}: {{.Task.Title}}</h1>
   </header>

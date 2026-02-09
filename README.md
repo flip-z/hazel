@@ -29,7 +29,7 @@ Standard Homebrew setup is a separate tap repo named `homebrew-hazel` under your
 One-time:
 
 1. Create the tap repo: `homebrew-hazel`
-2. Update `.goreleaser.yaml` and replace `TODO_OWNER` / `TODO_REPO`
+2. Ensure `.goreleaser.yaml` points at your repos (this repo: `flip-z/hazel`, tap: `flip-z/homebrew-hazel`)
 
 Release:
 
