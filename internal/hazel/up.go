@@ -992,10 +992,18 @@ const uiBoardHTML = `<!doctype html>
     .colmenu button { width:100%; margin-top:8px; }
     .colmenu .row { display:flex; gap:8px; align-items:center; }
     .colmenu .row input[type="number"] { width: 96px; }
-    .colmenu pre { margin: 0; padding: 10px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.10); background: rgba(0,0,0,.22); color: rgba(233,238,252,.86); overflow:auto; max-height: min(60vh, 360px); font-size: 12px; }
     .pilltop { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); padding:7px 10px; border-radius: 999px; color: rgba(233,238,252,.78); }
     .dot { width:8px; height:8px; border-radius:999px; background: rgba(134,247,197,.9); box-shadow: 0 0 0 4px rgba(134,247,197,.12); }
     main { padding:16px 16px 20px; }
+    .boardbar { display:flex; justify-content:flex-start; gap:10px; align-items:center; margin: 0 0 10px; }
+    .boardbar button { padding:8px 10px; border-radius:10px; }
+    dialog { border:1px solid rgba(255,255,255,.14); border-radius:14px; background: rgba(16,26,51,.98); color: var(--text); padding: 14px 14px; width: min(540px, calc(100vw - 48px)); }
+    dialog::backdrop { background: rgba(0,0,0,.55); }
+    dialog h3 { margin: 0 0 10px; font-size: 14px; letter-spacing:.08em; text-transform: uppercase; color: rgba(233,238,252,.75); }
+    dialog form { margin:0; display:flex; flex-direction:column; gap:10px; }
+    dialog input[type="text"] { width:100%; padding:10px 12px; border-radius:12px; }
+    dialog .dlgrow { display:flex; justify-content:flex-end; gap:10px; align-items:center; }
+    dialog .ghost { background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.12); }
     .board { display:grid; gap:12px; grid-template-columns: repeat(var(--cols), minmax(250px, 1fr)); overflow-x:auto; padding-bottom:12px; }
     .col { background: rgba(16,26,51,.78); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:10px; min-height: 70vh; }
     .col h2 { margin:4px 6px 10px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: rgba(233,238,252,.62); display:flex; justify-content:space-between; }
@@ -1026,29 +1034,15 @@ const uiBoardHTML = `<!doctype html>
         <h1>{{.Title}}</h1>
       </div>
       <div class="actions">
-        <form action="/mutate/new_task" method="post">
-          <input type="text" name="title" placeholder="New backlog item title" required />
-          <button type="submit">Create</button>
-        </form>
         {{if .Running}}
-          <button type="button" onclick="hazelOpenLogs()">Running...</button>
+          <a href="/runs">Running...</a>
         {{else}}
           <form action="/mutate/run" method="post" onsubmit="return hazelRunTick(this)">
             <button type="submit">Run tick</button>
           </form>
         {{end}}
         <a href="/runs">Runs</a>
-        <details class="cols" id="hzLogs">
-          <summary>Logs</summary>
-          <div class="colmenu">
-            <pre id="hzTail">No run output yet.</pre>
-            <div class="hint" style="margin-top:8px;"><a href="/runs">Open full run list</a></div>
-          </div>
-        </details>
         <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
-        {{if .Running}}
-          <span class="pilltop" title="Agent is running"><span class="spinner"></span>Running {{.RunningMode}} {{.RunningTask}}</span>
-        {{end}}
         {{if and .SchedulerOn (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
         {{end}}
@@ -1084,6 +1078,19 @@ const uiBoardHTML = `<!doctype html>
     <div class="hint">Board edits update board.yaml. task.md edits only happen when you explicitly save.</div>
   </header>
   <main>
+    <div class="boardbar">
+      <button type="button" onclick="hazelOpenCreate()">+ Create task</button>
+    </div>
+    <dialog id="hzCreateDlg">
+      <h3>Create Task</h3>
+      <form action="/mutate/new_task" method="post">
+        <input id="hzCreateTitle" type="text" name="title" placeholder="Task title" required />
+        <div class="dlgrow">
+          <button class="ghost" type="button" onclick="hazelCloseCreate()">Cancel</button>
+          <button type="submit">Create</button>
+        </div>
+      </form>
+    </dialog>
     <div class="board" style="--cols: {{.ColCount}};">
       {{range .Order}}
         {{$status := .}}
@@ -1137,8 +1144,7 @@ const uiBoardHTML = `<!doctype html>
       const fd = new FormData(form);
       fetch(form.action, { method: "POST", body: new URLSearchParams(fd), headers: { "X-Hazel-Ajax": "1" } })
         .then(() => {
-          hazelOpenLogs();
-          setTimeout(() => location.reload(), 1500);
+          setTimeout(() => location.href = "/runs", 250);
         })
         .catch(() => { if (btn) { btn.disabled = false; btn.textContent = "Run tick"; }});
       return false;
@@ -1190,37 +1196,19 @@ const uiBoardHTML = `<!doctype html>
       }, 1000);
     })();
 
-    function hazelOpenLogs() {
-      const logs = document.getElementById("hzLogs");
-      if (logs) logs.open = true;
-      hazelPollTail();
+    function hazelOpenCreate() {
+      const dlg = document.getElementById("hzCreateDlg");
+      if (!dlg || typeof dlg.showModal !== "function") return;
+      dlg.showModal();
+      const input = document.getElementById("hzCreateTitle");
+      if (input) input.focus();
     }
 
-    function hazelPollTail() {
-      const pre = document.getElementById("hzTail");
-      if (!pre) return;
-      fetch("/api/run_tail?lines=80", { headers: { "X-Hazel-Ajax": "1" } })
-        .then((r) => r.ok ? r.text() : "")
-        .then((txt) => { if (txt) pre.textContent = txt; });
-      fetch("/api/run_state", { headers: { "X-Hazel-Ajax": "1" } })
-        .then((r) => r.ok ? r.json() : null)
-        .then((st) => {
-          if (!st || !st.running) return;
-          setTimeout(hazelPollTail, 1200);
-        });
+    function hazelCloseCreate() {
+      const dlg = document.getElementById("hzCreateDlg");
+      if (!dlg || typeof dlg.close !== "function") return;
+      dlg.close();
     }
-
-    (function(){
-      const logs = document.getElementById("hzLogs");
-      if (!logs) return;
-      logs.addEventListener("toggle", () => {
-        if (logs.open) hazelPollTail();
-      });
-      // If we're already running when the page loads, start polling.
-      fetch("/api/run_state", { headers: { "X-Hazel-Ajax": "1" } })
-        .then((r) => r.ok ? r.json() : null)
-        .then((st) => { if (st && st.running) { logs.open = true; hazelPollTail(); } });
-    })();
   </script>
 </body>
 </html>`
