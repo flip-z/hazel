@@ -81,14 +81,21 @@ func (b *Board) Validate() error {
 }
 
 type Config struct {
-	Version             int    `yaml:"version"`
-	Port                int    `yaml:"port"`
-	RunIntervalSeconds  int    `yaml:"run_interval_seconds"`
-	SchedulerEnabled    bool   `yaml:"scheduler_enabled"`
-	AgentCommand        string `yaml:"agent_command"`
-	EnableEnrichment    bool   `yaml:"enable_enrichment"`
-	EnableRuns          bool   `yaml:"enable_runs"`
-	UIHideDoneByDefault bool   `yaml:"ui_hide_done_by_default"`
+	Version               int    `yaml:"version"`
+	Port                  int    `yaml:"port"`
+	RunIntervalSeconds    int    `yaml:"run_interval_seconds"`
+	SchedulerEnabled      bool   `yaml:"scheduler_enabled"`
+	AgentCommand          string `yaml:"agent_command"`
+	AgentPlanCommand      string `yaml:"agent_plan_command,omitempty"`
+	AgentImplementCommand string `yaml:"agent_implement_command,omitempty"`
+	AgentChatCommand      string `yaml:"agent_chat_command,omitempty"`
+	CodexApprovalPolicy   string `yaml:"codex_approval_policy,omitempty"`
+	GitHubToken           string `yaml:"github_token,omitempty"`
+	GitBaseBranch         string `yaml:"git_base_branch,omitempty"`
+	EnableEnrichment      bool   `yaml:"enable_enrichment"`
+	EnableRuns            bool   `yaml:"enable_runs"`
+	UIHideDoneByDefault   bool   `yaml:"ui_hide_done_by_default"`
+	ProjectsRootDir       string `yaml:"projects_root_dir,omitempty"`
 }
 
 func defaultConfig() Config {
@@ -101,5 +108,7 @@ func defaultConfig() Config {
 		EnableEnrichment:    false,
 		EnableRuns:          true,
 		UIHideDoneByDefault: true,
+		CodexApprovalPolicy: "on-request",
+		GitBaseBranch:       "main",
 	}
 }

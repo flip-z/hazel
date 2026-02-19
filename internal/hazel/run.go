@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -44,7 +45,7 @@ func runTickLocked(ctx context.Context, root string, opt RunOptions) (*RunResult
 	if cfg.Version == 0 {
 		cfg = defaultConfig()
 	}
-	if cfg.AgentCommand == "" && !opt.DryRun {
+	if agentCommandForMode(cfg, "implement") == "" && !opt.DryRun {
 		return nil, fmt.Errorf("agent_command is not configured in .hazel/config.yaml")
 	}
 
@@ -81,6 +82,9 @@ func runTickLocked(ctx context.Context, root string, opt RunOptions) (*RunResult
 		if err := writeAgentPacket(root, next, now); err != nil {
 			return nil, err
 		}
+		if _, err := writePromptPacket(root, next, "implement", now); err != nil {
+			return nil, err
+		}
 	}
 
 	res := &RunResult{DispatchedTaskID: next.ID}
@@ -109,17 +113,19 @@ func runTickLocked(ctx context.Context, root string, opt RunOptions) (*RunResult
 
 	// Persist run metadata alongside the log for UI browsing (best-effort).
 	if logPath != "" {
+		jsonSummary := summarizeJSONEventsFromLog(logPath)
 		_ = writeFileAtomic(runMetaPathForLog(logPath), mustJSONIndent(map[string]any{
-			"task_id":     next.ID,
-			"mode":        "implement",
-			"started_at":  now,
-			"ended_at":    time.Now(),
-			"exit_code":   exit,
-			"log_path":    logPath,
-			"dispatched":  true,
-			"hazel_root":  root,
-			"board_path":  boardPath(root),
-			"config_path": configPath(root),
+			"task_id":      next.ID,
+			"mode":         "implement",
+			"started_at":   now,
+			"ended_at":     time.Now(),
+			"exit_code":    exit,
+			"log_path":     logPath,
+			"dispatched":   true,
+			"hazel_root":   root,
+			"board_path":   boardPath(root),
+			"config_path":  configPath(root),
+			"json_summary": jsonSummary,
 		}), 0o644)
 	}
 
@@ -210,10 +216,12 @@ Files:
 
 - %s
 - %s
+- %s
 `,
 		t.ID, t.Title, t.Status, now.Format(time.RFC3339),
 		rel(root, taskFile(root, t.ID, "task.md")),
 		rel(root, taskFile(root, t.ID, "impl.md")),
+		rel(root, taskFile(root, t.ID, planProposalFile)),
 	)
 	return writeFileAtomic(p, []byte(body), 0o644)
 }
@@ -237,14 +245,22 @@ func computeRunLogPath(root string, cfg Config, now time.Time, taskID string) (s
 }
 
 func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID string, now time.Time, mode string, runLogPath string) (exit int, logPath string, err error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", cfg.AgentCommand)
+	cmdLine := strings.TrimSpace(agentCommandForMode(cfg, mode))
+	if cmdLine == "" {
+		return 0, runLogPath, fmt.Errorf("agent command is not configured for mode %s", mode)
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdLine)
 	td := taskDir(root, taskID)
-	cmd.Dir = root
+	repoRoot := resolveRepoRoot(root)
+	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
-		"HAZEL_ROOT="+root,
+		"HAZEL_ROOT="+repoRoot,
+		"HAZEL_STATE_ROOT="+root,
+		"HAZEL_REPO_ROOT="+repoRoot,
 		"HAZEL_TASK_ID="+taskID,
 		"HAZEL_TASK_DIR="+td,
 		"HAZEL_AGENT_PACKET="+taskFile(root, taskID, "agent_packet.md"),
+		"HAZEL_PROMPT_PACKET="+taskFile(root, taskID, "prompt_packet.md"),
 		"HAZEL_MODE="+mode,
 	)
 
@@ -281,6 +297,20 @@ func runAgentCommandMode(ctx context.Context, root string, cfg Config, taskID st
 
 func errorAs(err error, target any) bool {
 	return errorsAs(err, target)
+}
+
+func agentCommandForMode(cfg Config, mode string) string {
+	switch mode {
+	case "plan":
+		if strings.TrimSpace(cfg.AgentPlanCommand) != "" {
+			return cfg.AgentPlanCommand
+		}
+	case "implement":
+		if strings.TrimSpace(cfg.AgentImplementCommand) != "" {
+			return cfg.AgentImplementCommand
+		}
+	}
+	return strings.TrimSpace(cfg.AgentCommand)
 }
 
 func selectNextReadyFromFS(root string, tasks []*BoardTask) *BoardTask {

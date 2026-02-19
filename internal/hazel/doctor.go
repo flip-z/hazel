@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type DoctorReport struct {
@@ -15,7 +16,39 @@ func Doctor(ctx context.Context, root string) (*DoctorReport, error) {
 	_ = ctx
 	r := &DoctorReport{}
 
-	for _, p := range []string{hazelDir(root), boardPath(root), configPath(root), tasksDir(root)} {
+	for _, p := range []string{hazelDir(root), configPath(root)} {
+		if !exists(p) {
+			r.Problems = append(r.Problems, fmt.Sprintf("missing %s", rel(root, p)))
+		}
+	}
+	if len(r.Problems) != 0 {
+		return r, nil
+	}
+
+	var cfg Config
+	if err := readYAMLFile(configPath(root), &cfg); err != nil {
+		r.Problems = append(r.Problems, err.Error())
+		return r, nil
+	}
+
+	// Nexus mode validates each tracked project workspace.
+	if strings.TrimSpace(cfg.ProjectsRootDir) != "" {
+		nx, err := LoadNexus(root)
+		if err != nil {
+			r.Problems = append(r.Problems, err.Error())
+			return r, nil
+		}
+		for _, p := range nx.Projects {
+			for _, hp := range []string{hazelDir(p.StorageRoot), boardPath(p.StorageRoot), configPath(p.StorageRoot), tasksDir(p.StorageRoot)} {
+				if !exists(hp) {
+					r.Problems = append(r.Problems, fmt.Sprintf("%s missing %s", p.Key, hp))
+				}
+			}
+		}
+		return r, nil
+	}
+
+	for _, p := range []string{boardPath(root), tasksDir(root)} {
 		if !exists(p) {
 			r.Problems = append(r.Problems, fmt.Sprintf("missing %s", rel(root, p)))
 		}
@@ -34,11 +67,6 @@ func Doctor(ctx context.Context, root string) (*DoctorReport, error) {
 		return r, nil
 	}
 
-	var cfg Config
-	if err := readYAMLFile(configPath(root), &cfg); err != nil {
-		r.Problems = append(r.Problems, err.Error())
-		return r, nil
-	}
 	if cfg.Port == 0 {
 		r.Warnings = append(r.Warnings, "config port is 0")
 	}

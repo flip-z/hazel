@@ -4,16 +4,22 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
 type InitOptions struct {
-	AgentPreset string // codex|claude|none
+	AgentPreset     string // codex|claude|none
+	ProjectsRootDir string
 }
 
 func InitRepo(ctx context.Context, root string, opt InitOptions) error {
 	_ = ctx
+
+	if err := ValidateInitRoot(root); err != nil {
+		return err
+	}
 
 	if err := ensureDir(hazelDir(root)); err != nil {
 		return err
@@ -33,8 +39,15 @@ func InitRepo(ctx context.Context, root string, opt InitOptions) error {
 
 	if !exists(configPath(root)) {
 		cfg := defaultConfig()
+		cfg.ProjectsRootDir = strings.TrimSpace(opt.ProjectsRootDir)
 		if err := writeYAMLFile(configPath(root), &cfg); err != nil {
 			return err
+		}
+	} else if strings.TrimSpace(opt.ProjectsRootDir) != "" {
+		var cfg Config
+		if err := readYAMLFile(configPath(root), &cfg); err == nil {
+			cfg.ProjectsRootDir = strings.TrimSpace(opt.ProjectsRootDir)
+			_ = writeYAMLFile(configPath(root), &cfg)
 		}
 	}
 
@@ -105,6 +118,27 @@ func containsAgentsContract(s string) bool {
 	return strings.Contains(s, "## Agent Contract")
 }
 
+func ValidateInitRoot(root string) error {
+	inGit, err := isInsideGitWorkTree(root)
+	if err != nil {
+		return err
+	}
+	if inGit {
+		return fmt.Errorf("refusing to initialize in a git worktree: %s\nchoose a separate nexus directory outside tracked repos, then run: hazel init <nexus-path> [--projects-root <scan-dir>]", root)
+	}
+	return nil
+}
+
+func isInsideGitWorkTree(root string) (bool, error) {
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	b, err := cmd.Output()
+	if err != nil {
+		// If git command fails, fall back to checking local .git directory only.
+		return exists(filepath.Join(root, ".git")), nil
+	}
+	return strings.TrimSpace(string(b)) == "true", nil
+}
+
 const templateTaskMD = `# Task
 
 ## Summary
@@ -140,7 +174,7 @@ const templateImplMD = `# Implementation (Agent-Owned)
 
 const templateUsageMD = `# Using Hazel
 
-Hazel is a filesystem-first work queue. The repository is the source of truth.
+Hazel is a filesystem-first work queue. The nexus root is the source of truth.
 
 ## Quick Start
 
@@ -159,14 +193,15 @@ Hazel is a filesystem-first work queue. The repository is the source of truth.
 
 Hazel init can configure an agent preset:
 
-  hazel init --agent codex
-  hazel init --agent claude
+  hazel init /path/to/nexus --agent codex
+  hazel init /path/to/nexus --agent claude
+  hazel init /path/to/nexus --projects-root /path/to/projects
 
 This writes .hazel/agent.sh and sets .hazel/config.yaml agent_command so hazel run and hazel plan work out of the box.
 
 ## Plan Workflow (Codex)
 
-Planning is a separate workflow from implementation. It does not edit task.md; it writes planning output to impl.md.
+Planning writes a temporary proposal to plan.md. Accepting the proposal replaces task.md; declining it deletes plan.md.
 
   hazel plan HZ-0001
 
@@ -197,6 +232,7 @@ You probably want to commit:
 - .hazel/config.yaml
 - .hazel/tasks/**/task.md
 - .hazel/tasks/**/impl.md
+- .hazel/tasks/**/plan.md (temporary proposal; optional)
 
 And ignore ephemeral/generated files:
 
@@ -215,6 +251,7 @@ Edit .hazel/config.yaml and set:
 
 - agent_command: the invocation Hazel will run after it dispatches exactly one READY task to ACTIVE
 - enable_runs: capture stdout/stderr to .hazel/runs/
+- codex_approval_policy: on-request (default) or never (skip approval prompts)
 
 Important: agent_command is not a fixed task id. Hazel sets env vars per-dispatch so the same command can handle any task.
 
@@ -314,13 +351,18 @@ fi
 
 task_md="$HAZEL_TASK_DIR/task.md"
 impl_md="$HAZEL_TASK_DIR/impl.md"
+plan_md="$HAZEL_TASK_DIR/plan.md"
+packet_md="$HAZEL_PROMPT_PACKET"
 
 case "$mode" in
   plan)
-    codex exec "Follow AGENTS.md. PLAN MODE: Do not edit task.md. Read $task_md. Write a clear implementation plan into $impl_md. Do not change repo code in plan mode."
+    codex exec "Follow AGENTS.md. PLAN MODE: Do not edit task.md or repo code. Use context from $packet_md and $task_md. Write an enriched task definition proposal into $plan_md."
     ;;
   implement)
-    codex exec "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    codex exec "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Use context from $packet_md and $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    ;;
+  chat)
+    codex exec "$(cat "$HAZEL_CHAT_PROMPT_FILE")"
     ;;
   *)
     echo "unknown HAZEL_MODE: $mode" >&2
@@ -346,13 +388,18 @@ fi
 
 task_md="$HAZEL_TASK_DIR/task.md"
 impl_md="$HAZEL_TASK_DIR/impl.md"
+plan_md="$HAZEL_TASK_DIR/plan.md"
+packet_md="$HAZEL_PROMPT_PACKET"
 
 case "$mode" in
   plan)
-    claude -p "Follow AGENTS.md. PLAN MODE: Do not edit task.md. Read $task_md. Write a clear implementation plan into $impl_md. Do not change repo code in plan mode."
+    claude -p "Follow AGENTS.md. PLAN MODE: Do not edit task.md or repo code. Use context from $packet_md and $task_md. Write an enriched task definition proposal into $plan_md."
     ;;
   implement)
-    claude -p "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Read $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    claude -p "Follow AGENTS.md. IMPLEMENT MODE: Do not edit task.md. Use context from $packet_md and $task_md. Implement the work in the repo. Put any deliverable/output files in the repo root (outside .hazel/), not under $HAZEL_TASK_DIR. Document engineering work in $impl_md. After you finish, Hazel will move the task to REVIEW automatically."
+    ;;
+  chat)
+    claude -p "$(cat "$HAZEL_CHAT_PROMPT_FILE")"
     ;;
   *)
     echo "unknown HAZEL_MODE: $mode" >&2

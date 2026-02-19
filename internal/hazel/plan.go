@@ -7,7 +7,7 @@ import (
 )
 
 // Plan runs the configured agent in "plan" mode for a given task.
-// It must not edit task.md; it should write planning output to impl.md.
+// It must not edit task.md directly; it should write a proposal to plan.md.
 func Plan(ctx context.Context, root string, taskID string) (*RunResult, error) {
 	var outRes *RunResult
 	var outErr error
@@ -26,7 +26,7 @@ func planLocked(ctx context.Context, root string, taskID string) (*RunResult, er
 	if err := readYAMLFile(configPath(root), &cfg); err != nil {
 		return nil, err
 	}
-	if cfg.AgentCommand == "" {
+	if agentCommandForMode(cfg, "plan") == "" {
 		return nil, fmt.Errorf("agent_command is not configured in .hazel/config.yaml")
 	}
 
@@ -53,7 +53,12 @@ func planLocked(ctx context.Context, root string, taskID string) (*RunResult, er
 	if err := ensureTaskScaffold(root, taskID); err != nil {
 		return nil, err
 	}
+	// Avoid stale proposals if a prior plan failed or was abandoned.
+	_ = clearPlanProposal(root, taskID)
 	if err := writeAgentPacket(root, t, now); err != nil {
+		return nil, err
+	}
+	if _, err := writePromptPacket(root, t, "plan", now); err != nil {
 		return nil, err
 	}
 
@@ -71,13 +76,15 @@ func planLocked(ctx context.Context, root string, taskID string) (*RunResult, er
 		return nil, err
 	}
 	if logPath != "" {
+		jsonSummary := summarizeJSONEventsFromLog(logPath)
 		_ = writeFileAtomic(runMetaPathForLog(logPath), mustJSONIndent(map[string]any{
-			"task_id":    taskID,
-			"mode":       "plan",
-			"started_at": now,
-			"ended_at":   time.Now(),
-			"exit_code":  exit,
-			"log_path":   logPath,
+			"task_id":      taskID,
+			"mode":         "plan",
+			"started_at":   now,
+			"ended_at":     time.Now(),
+			"exit_code":    exit,
+			"log_path":     logPath,
+			"json_summary": jsonSummary,
 		}), 0o644)
 	}
 	_ = writeRunState(root, &RunState{

@@ -28,8 +28,18 @@ type taskFrontmatter struct {
 }
 
 type taskHazelMeta struct {
-	Color    string `yaml:"color"`
-	Priority string `yaml:"priority"`
+	Color    string      `yaml:"color"`
+	Priority string      `yaml:"priority"`
+	Git      taskGitMeta `yaml:"git,omitempty"`
+}
+
+type taskGitMeta struct {
+	Branch     string `yaml:"branch,omitempty"`
+	Base       string `yaml:"base,omitempty"`
+	LastCommit string `yaml:"last_commit,omitempty"`
+	PRURL      string `yaml:"pr_url,omitempty"`
+	MergeSHA   string `yaml:"merge_sha,omitempty"`
+	MergedAt   string `yaml:"merged_at,omitempty"`
 }
 
 var pastelPalette = []struct {
@@ -252,4 +262,43 @@ func ensureTaskColor(root, id string, defaultKey string) error {
 		return err
 	}
 	return writeTaskMD(root, id, updated)
+}
+
+func getTaskGitFromMD(md string) (taskGitMeta, bool) {
+	cfg, ok := getTaskConfig(md)
+	if !ok {
+		return taskGitMeta{}, false
+	}
+	g := cfg.Git
+	if strings.TrimSpace(g.Branch) == "" &&
+		strings.TrimSpace(g.Base) == "" &&
+		strings.TrimSpace(g.LastCommit) == "" &&
+		strings.TrimSpace(g.PRURL) == "" &&
+		strings.TrimSpace(g.MergeSHA) == "" &&
+		strings.TrimSpace(g.MergedAt) == "" {
+		return taskGitMeta{}, false
+	}
+	return g, true
+}
+
+func setTaskGitInMD(md string, update func(*taskGitMeta)) (string, error) {
+	fm, has, without, err := parseHazelConfigBlock(md)
+	if err != nil {
+		return "", err
+	}
+	var g taskGitMeta
+	if has {
+		g = fm.Hazel.Git
+	}
+	update(&g)
+	fm.Hazel.Git = g
+	block, err := formatHazelConfigBlock(fm)
+	if err != nil {
+		return "", err
+	}
+	base := md
+	if has {
+		base = without
+	}
+	return strings.TrimRight(base, " \t\r\n") + "\n" + block, nil
 }

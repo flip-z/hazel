@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,22 +45,65 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 	if repoSlug != "" {
 		title = repoSlug
 	}
+	loadNexus := func() (*Nexus, error) {
+		nx, err := LoadNexus(root)
+		if err != nil {
+			return nil, err
+		}
+		if nx == nil {
+			return nil, fmt.Errorf("nexus mode required: projects_root_dir must be configured")
+		}
+		return nx, nil
+	}
+	if _, err := loadNexus(); err != nil {
+		return "", err
+	}
+	title = "Hazel Nexus"
+	repoSlug = ""
+
+	withNexus := func(fn func(http.ResponseWriter, *http.Request, *Nexus)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			nx, err := loadNexus()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			fn(w, r, nx)
+		}
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { uiBoard(w, r, root, cfg, title, repoSlug) })
-	mux.HandleFunc("/task/", func(w http.ResponseWriter, r *http.Request) { uiTask(w, r, root, cfg, title, repoSlug) })
-	mux.HandleFunc("/mutate/status", func(w http.ResponseWriter, r *http.Request) { uiMutateStatus(w, r, root) })
-	mux.HandleFunc("/mutate/priority", func(w http.ResponseWriter, r *http.Request) { uiMutatePriority(w, r, root) })
-	mux.HandleFunc("/mutate/new_task", func(w http.ResponseWriter, r *http.Request) { uiMutateNewTask(w, r, root) })
-	mux.HandleFunc("/mutate/task_md", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskMD(w, r, root) })
-	mux.HandleFunc("/mutate/task_color", func(w http.ResponseWriter, r *http.Request) { uiMutateTaskColor(w, r, root) })
-	mux.HandleFunc("/mutate/plan", func(w http.ResponseWriter, r *http.Request) { uiMutatePlan(w, r, root) })
-	mux.HandleFunc("/mutate/interval", func(w http.ResponseWriter, r *http.Request) { uiMutateInterval(w, r, root) })
-	mux.HandleFunc("/mutate/run", func(w http.ResponseWriter, r *http.Request) { uiMutateRun(w, r, root) })
-	mux.HandleFunc("/runs", func(w http.ResponseWriter, r *http.Request) { uiRuns(w, r, root, title, repoSlug) })
-	mux.HandleFunc("/runs/", func(w http.ResponseWriter, r *http.Request) { uiRunView(w, r, root, title, repoSlug) })
-	mux.HandleFunc("/api/run_state", func(w http.ResponseWriter, r *http.Request) { apiRunState(w, r, root) })
-	mux.HandleFunc("/api/run_tail", func(w http.ResponseWriter, r *http.Request) { apiRunTail(w, r, root) })
+	mux.HandleFunc("/", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiBoard(w, r, root, cfg, title, repoSlug, nx) }))
+	mux.HandleFunc("/task/", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiTask(w, r, root, cfg, title, repoSlug, nx) }))
+	mux.HandleFunc("/panel/board", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiNexusBoardPanel(w, r, root, cfg, nx) }))
+	mux.HandleFunc("/chat", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiChat(w, r, root, nx) }))
+	mux.HandleFunc("/wiki", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiWiki(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/status", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateStatus(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/priority", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutatePriority(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/new_task", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateNewTask(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/task_md", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateTaskMD(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/task_color", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateTaskColor(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/plan", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutatePlan(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/plan_decision", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutatePlanDecision(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/interval", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateInterval(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/run", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateRun(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/git/start", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateGitStart(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/git/commit", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateGitCommit(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/git/pr", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateGitPR(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/git/merge", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateGitMerge(w, r, root, nx) }))
+	mux.HandleFunc("/mutate/config", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiMutateConfig(w, r, root, nx) }))
+	mux.HandleFunc("/history", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiRuns(w, r, root, title, repoSlug, nx) }))
+	mux.HandleFunc("/history/", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiRunView(w, r, root, title, repoSlug, nx) }))
+	mux.HandleFunc("/runs", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiRuns(w, r, root, title, repoSlug, nx) }))
+	mux.HandleFunc("/runs/", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { uiRunView(w, r, root, title, repoSlug, nx) }))
+	mux.HandleFunc("/api/run_state", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiRunState(w, r, root, nx) }))
+	mux.HandleFunc("/api/run_tail", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiRunTail(w, r, root, nx) }))
+	mux.HandleFunc("/api/codex/session/start", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiCodexSessionStart(w, r, root, nx) }))
+	mux.HandleFunc("/api/codex/session/poll", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiCodexSessionPoll(w, r, root, nx) }))
+	mux.HandleFunc("/api/codex/session/stop", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiCodexSessionStop(w, r, root, nx) }))
+	mux.HandleFunc("/api/codex/turn", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiCodexTurn(w, r, root, nx) }))
+	mux.HandleFunc("/api/codex/approval", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiCodexApproval(w, r, root, nx) }))
+	mux.HandleFunc("/api/nexus/health", withNexus(func(w http.ResponseWriter, r *http.Request, nx *Nexus) { apiNexusHealth(w, r, root, nx) }))
 
 	server := &http.Server{
 		Handler:           mux,
@@ -86,6 +130,7 @@ func Up(ctx context.Context, root string, opt UpOptions) (addr string, err error
 
 	// Always run the scheduler loop; it is a no-op unless enabled in config.
 	go schedulerLoop(ctx, root)
+	go runCodexTelemetryLoop(ctx, root)
 
 	go func() {
 		<-ctx.Done()
@@ -137,15 +182,27 @@ func schedulerLoop(ctx context.Context, root string) {
 			return
 		case <-timer.C:
 			if enabled {
-				_, _ = RunTick(ctx, root, RunOptions{})
+				nx, err := LoadNexus(root)
+				if err != nil || nx == nil || len(nx.Projects) == 0 {
+					continue
+				}
+				for _, p := range nx.Projects {
+					go func(projectRoot string) {
+						_, _ = RunTick(ctx, projectRoot, RunOptions{})
+					}(p.StorageRoot)
+				}
 			}
 		}
 	}
 }
 
-func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, title string, repoSlug string) {
+func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, title string, repoSlug string, nexus *Nexus) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if nexus != nil {
+		uiBoardNexus(w, r, root, cfg, nexus)
 		return
 	}
 
@@ -235,9 +292,13 @@ func uiBoard(w http.ResponseWriter, r *http.Request, root string, cfg Config, ti
 	})
 }
 
-func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, title string, repoSlug string) {
+func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, title string, repoSlug string, nexus *Nexus) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if nexus != nil {
+		uiTaskNexus(w, r, cfg, nexus)
 		return
 	}
 	latest, _ := loadConfigOrDefault(root)
@@ -302,29 +363,57 @@ func uiTask(w http.ResponseWriter, r *http.Request, root string, cfg Config, tit
 	}
 
 	implMD := read("impl.md")
+	planMD := read(planProposalFile)
+	gitMeta, _ := getTaskGitFromMD(taskMD)
 
 	priority := ""
 	if p, ok := getTaskPriorityFromMD(taskMD); ok {
 		priority = p
 	}
 	agentName, agentTip := agentUI(cfg)
-	_ = tpl.Execute(w, map[string]any{
-		"Task":      task,
-		"TaskMD":    taskMD,
-		"TaskHTML":  renderMD(renderTask),
-		"ImplHTML":  renderMD(implMD),
-		"ImplMD":    implMD,
-		"ColorKey":  colorKey,
-		"Palette":   pastelPalette,
-		"RingHex":   ringHexForPriorityLabel(priority),
-		"Priority":  priority,
-		"AllPrios":  []string{"", "HIGH", "MEDIUM", "LOW"},
-		"Title":     title,
-		"RepoSlug":  repoSlug,
-		"HazelURL":  hazelPoweredByURL(),
-		"AgentName": agentName,
-		"AgentTip":  agentTip,
-	})
+	chatLabel := "Run in Chat"
+	chatAutoRun := true
+	chatSession := ""
+	if ss, ok := latestChatSessionForTask(root, task.ID); ok {
+		chatLabel = "Open in Chat"
+		chatAutoRun = false
+		chatSession = strings.TrimSuffix(ss.Name, ".jsonl")
+	}
+	chatHref := "/chat?task=" + url.QueryEscape(task.ID)
+	if chatAutoRun {
+		chatHref += "&autorun=1"
+	}
+	if chatSession != "" {
+		chatHref += "&session=" + url.QueryEscape(chatSession)
+	}
+	if err := tpl.Execute(w, map[string]any{
+		"Task":        task,
+		"TaskMD":      taskMD,
+		"TaskHTML":    renderMD(renderTask),
+		"ImplHTML":    renderMD(implMD),
+		"ImplMD":      implMD,
+		"PlanHTML":    renderMD(planMD),
+		"PlanMD":      planMD,
+		"HasPlan":     strings.TrimSpace(planMD) != "",
+		"ColorKey":    colorKey,
+		"Palette":     pastelPalette,
+		"RingHex":     ringHexForPriorityLabel(priority),
+		"Priority":    priority,
+		"AllPrios":    []string{"", "HIGH", "MEDIUM", "LOW"},
+		"Title":       title,
+		"RepoSlug":    repoSlug,
+		"HazelURL":    hazelPoweredByURL(),
+		"AgentName":   agentName,
+		"AgentTip":    agentTip,
+		"ChatHref":    chatHref,
+		"ChatLabel":   chatLabel,
+		"ChatAutoRun": chatAutoRun,
+		"ChatSession": chatSession,
+		"Git":         gitMeta,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func loadConfigOrDefault(root string) (Config, error) {
@@ -338,7 +427,26 @@ func loadConfigOrDefault(root string) (Config, error) {
 	return cfg, nil
 }
 
-func uiMutateStatus(w http.ResponseWriter, r *http.Request, root string) {
+func resolveProjectRoot(nexus *Nexus, r *http.Request, fallback string) (projectRoot string, projectKey string, err error) {
+	_ = fallback
+	if nexus == nil {
+		return "", "", fmt.Errorf("nexus mode required")
+	}
+	key := strings.TrimSpace(r.FormValue("project"))
+	if key == "" {
+		key = strings.TrimSpace(r.URL.Query().Get("project"))
+	}
+	if key == "" {
+		return "", "", fmt.Errorf("project is required in nexus mode")
+	}
+	p, ok := nexus.ProjectByKey(key)
+	if !ok {
+		return "", "", fmt.Errorf("unknown project %q", key)
+	}
+	return p.StorageRoot, key, nil
+}
+
+func uiMutateStatus(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -353,21 +461,38 @@ func uiMutateStatus(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, "invalid id or status", http.StatusBadRequest)
 		return
 	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	var b Board
-	if err := readYAMLFile(boardPath(root), &b); err != nil {
+	if err := readYAMLFile(boardPath(projectRoot), &b); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
 	for _, t := range b.Tasks {
 		if t.ID == id {
+			if status == StatusReview || status == StatusDone {
+				md, _ := readTaskMD(projectRoot, id)
+				git, _ := getTaskGitFromMD(md)
+				if status == StatusReview && strings.TrimSpace(git.PRURL) == "" {
+					http.Error(w, "cannot move to REVIEW without PR URL; use Open PR in task Git Flow", http.StatusBadRequest)
+					return
+				}
+				if status == StatusDone && strings.TrimSpace(git.MergeSHA) == "" {
+					http.Error(w, "cannot move to DONE without merge SHA; use Mark Merged in task Git Flow", http.StatusBadRequest)
+					return
+				}
+			}
 			t.Status = status
 			t.UpdatedAt = now
 			break
 		}
 	}
-	if err := writeYAMLFile(boardPath(root), &b); err != nil {
+	if err := writeYAMLFile(boardPath(projectRoot), &b); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -375,10 +500,14 @@ func uiMutateStatus(w http.ResponseWriter, r *http.Request, root string) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	target := "/"
+	if projectKey != "" {
+		target = "/?project=" + projectKey
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func uiMutatePriority(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutatePriority(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -399,8 +528,13 @@ func uiMutatePriority(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, "invalid priority", http.StatusBadRequest)
 		return
 	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	md, err := readTaskMD(root, id)
+	md, err := readTaskMD(projectRoot, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -410,19 +544,23 @@ func uiMutatePriority(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := writeTaskMD(root, id, updated); err != nil {
+	if err := writeTaskMD(projectRoot, id, updated); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_ = bumpBoardUpdatedAt(root, id)
+	_ = bumpBoardUpdatedAt(projectRoot, id)
 	if r.Header.Get("X-Hazel-Ajax") == "1" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	target := "/"
+	if projectKey != "" {
+		target = "/?project=" + projectKey
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func uiMutateInterval(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutateInterval(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -455,14 +593,24 @@ func uiMutateInterval(w http.ResponseWriter, r *http.Request, root string) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func uiMutateRun(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutateRun(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Preflight: if agent is unconfigured, fail fast rather than silently doing nothing.
-	cfg, cfgErr := loadConfigOrDefault(root)
+	cfg, cfgErr := loadConfigOrDefault(projectRoot)
 	if cfgErr == nil && cfg.Version == 0 {
 		cfg = defaultConfig()
 	}
@@ -473,7 +621,7 @@ func uiMutateRun(w http.ResponseWriter, r *http.Request, root string) {
 
 	// Run asynchronously so the UI doesn't hang for long agent runs.
 	go func() {
-		res, err := RunTick(context.Background(), root, RunOptions{})
+		res, err := RunTick(context.Background(), projectRoot, RunOptions{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hazel: run tick error: %v\n", err)
 			return
@@ -487,10 +635,14 @@ func uiMutateRun(w http.ResponseWriter, r *http.Request, root string) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	target := "/"
+	if projectKey != "" {
+		target = "/?project=" + projectKey
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func uiMutateNewTask(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutateNewTask(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -504,15 +656,24 @@ func uiMutateNewTask(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, "title is required", http.StatusBadRequest)
 		return
 	}
-	t, err := createNewTask(root, title)
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	t, err := createNewTask(projectRoot, title)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/task/"+t.ID, http.StatusSeeOther)
+	target := "/task/" + t.ID
+	if projectKey != "" {
+		target = "/task/" + projectKey + "/" + t.ID
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func uiMutateTaskMD(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutateTaskMD(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -527,20 +688,29 @@ func uiMutateTaskMD(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	if err := ensureTaskScaffold(root, id); err != nil {
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ensureTaskScaffold(projectRoot, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := writeTaskMD(root, id, content); err != nil {
+	if err := writeTaskMD(projectRoot, id, content); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// Update board updated_at for visibility in tooling.
-	_ = bumpBoardUpdatedAt(root, id)
-	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
+	_ = bumpBoardUpdatedAt(projectRoot, id)
+	target := "/task/" + id
+	if projectKey != "" {
+		target = "/task/" + projectKey + "/" + id
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -559,7 +729,12 @@ func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, "invalid color", http.StatusBadRequest)
 		return
 	}
-	md, err := readTaskMD(root, id)
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	md, err := readTaskMD(projectRoot, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -569,14 +744,18 @@ func uiMutateTaskColor(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := writeTaskMD(root, id, updated); err != nil {
+	if err := writeTaskMD(projectRoot, id, updated); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/task/"+id, http.StatusSeeOther)
+	target := "/task/" + id
+	if projectKey != "" {
+		target = "/task/" + projectKey + "/" + id
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-func uiMutatePlan(w http.ResponseWriter, r *http.Request, root string) {
+func uiMutatePlan(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -590,15 +769,303 @@ func uiMutatePlan(w http.ResponseWriter, r *http.Request, root string) {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = clearPlanProposal(projectRoot, id)
 	// Run the same workflow as `hazel plan`, but from the UI.
 	// Do it asynchronously so the request doesn't hang for long-running agents.
-	go func() { _, _ = Plan(context.Background(), root, id) }()
+	go func() { _, _ = Plan(context.Background(), projectRoot, id) }()
 
 	if r.Header.Get("X-Hazel-Ajax") == "1" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/task/"+id+"?plan=started", http.StatusSeeOther)
+	target := "/task/" + id + "?plan=started"
+	if projectKey != "" {
+		target = "/task/" + projectKey + "/" + id + "?plan=started"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func uiMutatePlanDecision(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	decision := strings.ToLower(strings.TrimSpace(r.FormValue("decision")))
+	if decision != "accept" && decision != "decline" {
+		http.Error(w, "invalid decision", http.StatusBadRequest)
+		return
+	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if decision == "decline" {
+		if err := clearPlanProposal(projectRoot, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		taskMD, err := readTaskMD(projectRoot, id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		planMD, err := readPlanProposal(projectRoot, id)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "plan proposal not found", http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		merged, err := mergeTaskMDWithPlanProposal(taskMD, planMD)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := writeTaskMD(projectRoot, id, merged); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := clearPlanProposal(projectRoot, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	target := "/task/" + id
+	if projectKey != "" {
+		target = "/task/" + projectKey + "/" + id
+	}
+	target += "?plan=" + url.QueryEscape(decision+"ed")
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func findTaskInBoard(projectRoot, taskID string) (*BoardTask, error) {
+	var b Board
+	if err := readYAMLFile(boardPath(projectRoot), &b); err != nil {
+		return nil, err
+	}
+	for _, t := range b.Tasks {
+		if t.ID == taskID {
+			return t, nil
+		}
+	}
+	return nil, fmt.Errorf("task not found: %s", taskID)
+}
+
+func uiMutateGitStart(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	taskID := strings.TrimSpace(r.FormValue("id"))
+	task, err := findTaskInBoard(projectRoot, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	project, ok := nexus.ProjectByKey(projectKey)
+	if !ok {
+		http.Error(w, "unknown project", http.StatusBadRequest)
+		return
+	}
+	cfg, _ := loadConfigOrDefault(root)
+	if _, err := startTaskBranch(project, task, cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	task.Status = StatusActive
+	_ = bumpBoardTaskStatus(project.StorageRoot, task.ID, StatusActive)
+	http.Redirect(w, r, "/task/"+projectKey+"/"+task.ID, http.StatusSeeOther)
+}
+
+func uiMutateGitCommit(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	taskID := strings.TrimSpace(r.FormValue("id"))
+	task, err := findTaskInBoard(projectRoot, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	project, ok := nexus.ProjectByKey(projectKey)
+	if !ok {
+		http.Error(w, "unknown project", http.StatusBadRequest)
+		return
+	}
+	msg := strings.TrimSpace(r.FormValue("message"))
+	if msg == "" {
+		msg = task.ID + ": " + task.Title
+	}
+	if _, err := commitTaskChanges(project, task, msg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/task/"+projectKey+"/"+task.ID, http.StatusSeeOther)
+}
+
+func uiMutateGitPR(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	taskID := strings.TrimSpace(r.FormValue("id"))
+	task, err := findTaskInBoard(projectRoot, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	project, ok := nexus.ProjectByKey(projectKey)
+	if !ok {
+		http.Error(w, "unknown project", http.StatusBadRequest)
+		return
+	}
+	cfg, _ := loadConfigOrDefault(root)
+	meta, _ := captureTaskGitMeta(project, task, cfg)
+	if _, err := openTaskPR(project, task, cfg, meta); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = bumpBoardTaskStatus(project.StorageRoot, task.ID, StatusReview)
+	http.Redirect(w, r, "/task/"+projectKey+"/"+task.ID, http.StatusSeeOther)
+}
+
+func uiMutateGitMerge(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	taskID := strings.TrimSpace(r.FormValue("id"))
+	task, err := findTaskInBoard(projectRoot, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	project, ok := nexus.ProjectByKey(projectKey)
+	if !ok {
+		http.Error(w, "unknown project", http.StatusBadRequest)
+		return
+	}
+	mergeSHA := strings.TrimSpace(r.FormValue("merge_sha"))
+	if mergeSHA == "" {
+		mergeSHA, _ = runCmd(project.RepoPath, nil, "git", "rev-parse", "HEAD")
+	}
+	if err := markTaskMerged(project, task, mergeSHA); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = bumpBoardTaskStatus(project.StorageRoot, task.ID, StatusDone)
+	http.Redirect(w, r, "/task/"+projectKey+"/"+task.ID, http.StatusSeeOther)
+}
+
+func uiMutateConfig(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
+	_ = nexus
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	cfg, _ := loadConfigOrDefault(root)
+	if strings.TrimSpace(r.FormValue("clear_github_token")) != "" {
+		cfg.GitHubToken = ""
+	}
+	token := strings.TrimSpace(r.FormValue("github_token"))
+	if token != "" {
+		cfg.GitHubToken = token
+	}
+	cfg.GitBaseBranch = strings.TrimSpace(r.FormValue("git_base_branch"))
+	if cfg.GitBaseBranch == "" {
+		cfg.GitBaseBranch = "main"
+	}
+	if err := writeYAMLFile(configPath(root), &cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	target := "/"
+	if p := strings.TrimSpace(r.FormValue("project")); p != "" {
+		target = "/?project=" + url.QueryEscape(p)
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func bumpBoardTaskStatus(projectRoot, taskID string, status Status) error {
+	var b Board
+	if err := readYAMLFile(boardPath(projectRoot), &b); err != nil {
+		return err
+	}
+	now := time.Now()
+	changed := false
+	for _, t := range b.Tasks {
+		if t.ID == taskID {
+			t.Status = status
+			t.UpdatedAt = now
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return fmt.Errorf("task not found: %s", taskID)
+	}
+	return writeYAMLFile(boardPath(projectRoot), &b)
 }
 
 func bumpBoardUpdatedAt(root, id string) error {
@@ -638,12 +1105,17 @@ func ringHexForPriorityLabel(lbl string) string {
 	}
 }
 
-func apiRunState(w http.ResponseWriter, r *http.Request, root string) {
+func apiRunState(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	st, err := readRunState(root)
+	projectRoot, _, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	st, err := readRunState(projectRoot)
 	if err != nil {
 		// Treat missing/invalid state as "not running".
 		st = &RunState{Running: false}
@@ -652,9 +1124,14 @@ func apiRunState(w http.ResponseWriter, r *http.Request, root string) {
 	_ = json.NewEncoder(w).Encode(st)
 }
 
-func apiRunTail(w http.ResponseWriter, r *http.Request, root string) {
+func apiRunTail(w http.ResponseWriter, r *http.Request, root string, nexus *Nexus) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	projectRoot, _, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	lines := 80
@@ -667,14 +1144,14 @@ func apiRunTail(w http.ResponseWriter, r *http.Request, root string) {
 		lines = 400
 	}
 
-	st, _ := readRunState(root)
+	st, _ := readRunState(projectRoot)
 	logPath := ""
 	if st != nil && st.LogPath != "" {
 		logPath = st.LogPath
 	}
 	if logPath == "" {
 		// Fall back to the newest run log.
-		logPath = newestRunLog(root)
+		logPath = newestRunLog(projectRoot)
 	}
 	if logPath == "" {
 		w.WriteHeader(http.StatusNoContent)
@@ -725,74 +1202,98 @@ func tailLines(s string, n int) string {
 	return strings.Join(lines[len(lines)-n:], "\n") + "\n"
 }
 
-func uiRuns(w http.ResponseWriter, r *http.Request, root string, title string, repoSlug string) {
+func uiRuns(w http.ResponseWriter, r *http.Request, root string, title string, repoSlug string, nexus *Nexus) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.URL.Path != "/runs" {
+	if r.URL.Path != "/runs" && r.URL.Path != "/history" {
 		http.NotFound(w, r)
 		return
 	}
 
 	type row struct {
-		Name     string
-		TaskID   string
-		Mode     string
-		ExitCode string
+		TaskID      string
+		TaskIDRaw   string
+		Sessions    int
+		LastAt      string
+		LastSummary string
+		LatestName  string
+		ChatHref    string
 	}
 
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if nexus != nil && projectKey != "" {
+		if p, ok := nexus.ProjectByKey(projectKey); ok {
+			title = p.Name
+			repoSlug = p.RepoSlug
+		}
+	}
+	summaries, err := listChatSessionSummaries(projectRoot)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type agg struct {
+		count      int
+		lastAt     time.Time
+		lastText   string
+		latestName string
+	}
+	grouped := map[string]*agg{}
+	for _, s := range summaries {
+		taskID := strings.TrimSpace(s.TaskID)
+		if taskID == "" {
+			taskID = "(none)"
+		}
+		g := grouped[taskID]
+		if g == nil {
+			g = &agg{}
+			grouped[taskID] = g
+		}
+		g.count++
+		if g.lastAt.IsZero() || s.ModifiedAt.After(g.lastAt) {
+			g.lastAt = s.ModifiedAt
+			g.lastText = s.LastAssistant
+			g.latestName = s.Name
+		}
+	}
 	var rows []row
-	dir := runsDir(root)
-	ents, _ := os.ReadDir(dir)
-	for _, e := range ents {
-		if e.IsDir() {
-			continue
+	for taskID, g := range grouped {
+		taskIDRaw := taskID
+		if taskIDRaw == "(none)" {
+			taskIDRaw = ""
 		}
-		name := e.Name()
-		if !strings.HasSuffix(name, ".log") {
-			continue
-		}
-		base := strings.TrimSuffix(name, ".log")
-		taskID := ""
-		mode := ""
-		exit := ""
-		if parts := strings.SplitN(base, "_", 2); len(parts) == 2 {
-			taskID = parts[1]
-		}
-		metaPath := runMetaPathForLog(filepath.Join(dir, name))
-		if mb, err := os.ReadFile(metaPath); err == nil {
-			var m map[string]any
-			if json.Unmarshal(mb, &m) == nil {
-				if v, ok := m["mode"].(string); ok {
-					mode = v
-				}
-				if v, ok := m["task_id"].(string); ok {
-					taskID = v
-				}
-				if v, ok := m["exit_code"].(float64); ok {
-					exit = fmtInt(int(v))
-				}
-			}
+		chatHref := "/chat"
+		if projectKey != "" {
+			chatHref += "?project=" + url.QueryEscape(projectKey)
 		} else {
-			// Backfill for older logs (before metadata existed): infer mode from the log body.
-			if lb, lerr := os.ReadFile(filepath.Join(dir, name)); lerr == nil {
-				s := string(lb)
-				if strings.Contains(s, "PLAN MODE:") {
-					mode = "plan"
-				} else if strings.Contains(s, "IMPLEMENT MODE:") {
-					mode = "implement"
-				}
-			}
+			chatHref += "?"
+		}
+		if taskIDRaw != "" {
+			chatHref += "&task=" + url.QueryEscape(taskIDRaw)
+		}
+		if g.latestName != "" {
+			chatHref += "&session=" + url.QueryEscape(strings.TrimSuffix(g.latestName, ".jsonl"))
 		}
 		rows = append(rows, row{
-			Name:     base,
-			TaskID:   taskID,
-			Mode:     mode,
-			ExitCode: exit,
+			TaskID:      taskID,
+			TaskIDRaw:   taskIDRaw,
+			Sessions:    g.count,
+			LastAt:      g.lastAt.Format("2006-01-02 15:04"),
+			LastSummary: clipped(strings.TrimSpace(g.lastText), 180),
+			LatestName:  strings.TrimSuffix(g.latestName, ".jsonl"),
+			ChatHref:    chatHref,
 		})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Name > rows[j].Name })
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].LastAt > rows[j].LastAt
+	})
+	embed := strings.TrimSpace(r.URL.Query().Get("embed")) == "1"
 
 	tpl := template.Must(template.New("runs").Parse(uiRunsHTML))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -800,38 +1301,63 @@ func uiRuns(w http.ResponseWriter, r *http.Request, root string, title string, r
 		"Title":    title,
 		"RepoSlug": repoSlug,
 		"Rows":     rows,
+		"Project":  projectKey,
+		"Embed":    embed,
 	})
 }
 
-func uiRunView(w http.ResponseWriter, r *http.Request, root string, title string, repoSlug string) {
+func uiRunView(w http.ResponseWriter, r *http.Request, root string, title string, repoSlug string, nexus *Nexus) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	projectRoot, projectKey, err := resolveProjectRoot(nexus, r, root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if nexus != nil && projectKey != "" {
+		if p, ok := nexus.ProjectByKey(projectKey); ok {
+			title = p.Name
+			repoSlug = p.RepoSlug
+		}
+	}
 	name := strings.TrimPrefix(r.URL.Path, "/runs/")
+	if strings.HasPrefix(r.URL.Path, "/history/") {
+		name = strings.TrimPrefix(r.URL.Path, "/history/")
+	}
 	name = strings.Trim(name, "/")
 	if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	logPath := filepath.Join(runsDir(root), name+".log")
-	b, err := os.ReadFile(logPath)
+	sessionName := name
+	if !strings.HasSuffix(sessionName, ".jsonl") {
+		sessionName += ".jsonl"
+	}
+	sessionPath := filepath.Join(chatSessionsDir(projectRoot), sessionName)
+	evs, err := loadChatSessionEvents(sessionPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-
-	st, _ := readRunState(root)
-	running := st != nil && st.Running && st.LogPath == logPath
+	eventsJSON := "[]"
+	if b, err := json.Marshal(evs); err == nil {
+		eventsJSON = string(b)
+	}
+	taskID := taskIDFromChatSessionName(sessionName)
+	embed := strings.TrimSpace(r.URL.Query().Get("embed")) == "1"
 
 	tpl := template.Must(template.New("run").Parse(uiRunHTML))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = tpl.Execute(w, map[string]any{
 		"Title":    title,
 		"RepoSlug": repoSlug,
-		"Name":     name,
-		"Running":  running,
-		"Body":     string(b),
+		"Name":     strings.TrimSuffix(sessionName, ".jsonl"),
+		"TaskID":   taskID,
+		"Events":   template.JS(eventsJSON),
+		"Project":  projectKey,
+		"Embed":    embed,
 	})
 }
 
@@ -840,53 +1366,59 @@ const uiRunsHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{.Title}} - Runs</title>
+  <title>{{.Title}} - History</title>
   <style>
-    :root { --bg:#0b1020; --panel:#101a33; --text:#e9eefc; --muted:#aab4d6; --accent:#86f7c5; }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap');
+    :root { --bg:#102022; --panel:rgba(25,49,51,.35); --text:#e7fbff; --muted:#8dc7cf; --accent:#13daec; --line:#326267; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
-    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
-    header a { color: var(--accent); text-decoration:none; font-size:12px; }
-    h1 { margin:6px 0 0; font-size:18px; }
-    main { padding: 18px 18px 28px; max-width: 980px; margin:0 auto; }
-    .panel { background: rgba(16,26,51,.85); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
-    .row { display:flex; justify-content:space-between; gap:12px; align-items:center; }
-    table { width:100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align:left; padding:10px 8px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
-    th { color: rgba(233,238,252,.62); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; }
-    a.link { color: rgba(233,238,252,.9); text-decoration:none; }
-    a.link:hover { text-decoration: underline; }
-    .pill { display:inline-flex; align-items:center; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); padding:3px 8px; border-radius:999px; font-size:12px; color: rgba(233,238,252,.78); }
+    body { margin:0; font-family:"Space Grotesk", ui-sans-serif, system-ui; background:var(--bg); color:var(--text); min-height:100dvh; display:flex; flex-direction:column; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(rgba(19,218,236,.04) 50%, rgba(0,0,0,0) 50%); background-size:100% 4px; }
+    header { padding:10px 16px; border-bottom:1px solid var(--line); background: rgba(16,32,34,.95); position: sticky; top:0; z-index:10; }
+    header a { color: var(--accent); text-decoration:none; font-size:11px; text-transform:uppercase; }
+    h1 { margin:8px 0 0; color:var(--accent); font-size:15px; text-transform:uppercase; letter-spacing:.1em; }
+    main { padding:10px; flex:1; min-height:0; }
+    .panel { border:1px solid var(--line); background:var(--panel); border-radius:4px; padding:10px; }
+    .row { display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:8px; }
+    .pill { border:1px solid var(--line); border-radius:4px; padding:3px 7px; font-size:10px; text-transform:uppercase; color:var(--text); background:rgba(0,0,0,.2); }
+    table { width:100%; border-collapse: collapse; font-size:12px; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid rgba(255,255,255,.08); vertical-align: top; }
+    th { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.1em; }
+    a.link { color:var(--accent); text-decoration:none; }
+    a.link:hover { text-decoration:underline; }
   </style>
 </head>
 <body>
+  {{if not .Embed}}
   <header>
-    <a href="/">Back to board</a>
-    <h1>Runs</h1>
+    <a href="{{if .Project}}/?project={{.Project}}{{else}}/{{end}}">Back to board</a>
+    <h1>History</h1>
   </header>
+  {{end}}
   <main>
     <section class="panel">
       <div class="row">
         <div class="pill">{{.Title}}</div>
-        <div class="pill">{{len .Rows}} logs</div>
+        <div class="pill">{{len .Rows}} tasks</div>
       </div>
       <div style="margin-top:12px;">
         <table>
           <thead>
             <tr>
-              <th>Run</th>
               <th>Task</th>
-              <th>Mode</th>
-              <th>Exit</th>
+              <th>Sessions</th>
+              <th>Last</th>
+              <th>Summary</th>
             </tr>
           </thead>
           <tbody>
             {{range .Rows}}
               <tr>
-                <td><a class="link" href="/runs/{{.Name}}">{{.Name}}</a></td>
-                <td>{{.TaskID}}</td>
-                <td>{{if .Mode}}{{.Mode}}{{else}}-{{end}}</td>
-                <td>{{if .ExitCode}}{{.ExitCode}}{{else}}-{{end}}</td>
+                <td>
+                  <a class="link hzOpenChat" data-project="{{$.Project}}" data-task="{{.TaskIDRaw}}" data-session="{{.LatestName}}" href="{{.ChatHref}}">{{.TaskID}}</a>
+                </td>
+                <td>{{.Sessions}}</td>
+                <td>{{.LastAt}}</td>
+                <td>{{if .LastSummary}}{{.LastSummary}}{{else}}-{{end}}</td>
               </tr>
             {{end}}
           </tbody>
@@ -894,6 +1426,30 @@ const uiRunsHTML = `<!doctype html>
       </div>
     </section>
   </main>
+  <script>
+    (function(){
+      if (!{{if .Embed}}true{{else}}false{{end}}) return;
+      const links = Array.from(document.querySelectorAll('.hzOpenChat'));
+      for (const a of links) {
+        a.addEventListener('click', (ev) => {
+          try {
+            if (window.parent && window.parent !== window) {
+              ev.preventDefault();
+              window.parent.postMessage({
+                type: 'hazel-open-chat-session',
+                project: a.getAttribute('data-project') || '',
+                task: a.getAttribute('data-task') || '',
+                session: a.getAttribute('data-session') || '',
+                autorun: false
+              }, '*');
+              return false;
+            }
+          } catch (_) {}
+          return true;
+        });
+      }
+    })();
+  </script>
 </body>
 </html>`
 
@@ -902,34 +1458,154 @@ const uiRunHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{.Title}} - Run {{.Name}}</title>
+  <title>{{.Title}} - History {{.Name}}</title>
   <style>
-    :root { --bg:#0b1020; --panel:#101a33; --text:#e9eefc; --muted:#aab4d6; --accent:#86f7c5; }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap');
+    :root { --bg:#102022; --panel:rgba(25,49,51,.35); --text:#e7fbff; --muted:#8dc7cf; --accent:#13daec; --line:#326267; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
-    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
-    header a { color: var(--accent); text-decoration:none; font-size:12px; }
-    h1 { margin:6px 0 0; font-size:18px; }
-    .meta { margin-top:6px; color: rgba(233,238,252,.6); font-size:12px; }
-    main { padding: 18px 18px 28px; max-width: 980px; margin:0 auto; }
-    pre { white-space: pre-wrap; background: rgba(0,0,0,.22); border:1px solid rgba(255,255,255,.10); padding:12px 12px; border-radius:12px; overflow:auto; }
-    .pill { display:inline-flex; align-items:center; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); padding:3px 8px; border-radius:999px; font-size:12px; color: rgba(233,238,252,.78); }
+    body { margin:0; font-family:"Space Grotesk", ui-sans-serif, system-ui; background:var(--bg); color:var(--text); min-height:100dvh; display:flex; flex-direction:column; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(rgba(19,218,236,.04) 50%, rgba(0,0,0,0) 50%); background-size:100% 4px; }
+    header { padding:10px 16px; border-bottom:1px solid var(--line); background: rgba(16,32,34,.95); position: sticky; top:0; z-index:10; }
+    header a { color: var(--accent); text-decoration:none; font-size:11px; text-transform:uppercase; }
+    h1 { margin:8px 0 0; color:var(--accent); font-size:15px; text-transform:uppercase; letter-spacing:.1em; }
+    .meta { margin-top:6px; color: var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; }
+    main { padding:10px; flex:1; min-height:0; }
+    .stream { white-space: pre-wrap; background: rgba(0,0,0,.22); border:1px solid var(--line); border-radius:4px; padding:10px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; min-height: 200px; }
+    .line { margin-bottom:6px; }
+    .line-user { color:#9de8f3; }
+    .line-assistant { color:#f5ffff; }
+    .line-tool { color:#b8f8a2; }
+    .line-warn { color:#facc15; }
+    .line-err { color:#ff6b6b; }
+    .pill { border:1px solid var(--line); border-radius:4px; padding:3px 7px; font-size:10px; text-transform:uppercase; color:var(--text); background:rgba(0,0,0,.2); }
   </style>
 </head>
 <body>
+  {{if not .Embed}}
   <header>
-    <a href="/runs">Back to runs</a>
+    <a href="/history{{if .Project}}?project={{.Project}}{{end}}">Back to history</a>
     <h1>{{.Name}}</h1>
-    <div class="meta">{{if .Running}}<span class="pill">running</span>{{else}}<span class="pill">done</span>{{end}}</div>
+    <div class="meta"><span class="pill">{{if .TaskID}}{{.TaskID}}{{else}}(none){{end}}</span></div>
   </header>
+  {{end}}
   <main>
-    <pre id="hzBody">{{.Body}}</pre>
+    <div id="hzStream" class="stream"></div>
   </main>
   <script>
     (function(){
-      const running = {{if .Running}}true{{else}}false{{end}};
-      if (!running) return;
-      setInterval(() => location.reload(), 1500);
+      const events = {{.Events}};
+      const stream = document.getElementById('hzStream');
+      const assistantByItem = new Map();
+      const toolByItem = new Map();
+      const toolCommandByItem = new Map();
+      const pendingToolCommands = [];
+      function appendLine(cls, text) {
+        const div = document.createElement('div');
+        div.className = 'line ' + cls;
+        div.textContent = text;
+        stream.appendChild(div);
+        return div;
+      }
+      function parseCommandFromApprovalText(s) {
+        const txt = (s || '').trim();
+        const idx = txt.indexOf(': ');
+        if (idx === -1) return '';
+        return txt.slice(idx + 2).trim();
+      }
+      function escapeHTML(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+      function renderMarkdown(s) {
+        const bt = String.fromCharCode(96);
+        const fence = bt + bt + bt;
+        const lines = String(s || '').split('\n');
+        const out = [];
+        let inCode = false;
+        for (const line of lines) {
+          if (line.trim().startsWith(fence)) {
+            out.push(inCode ? '</code></pre>' : '<pre><code>');
+            inCode = !inCode;
+            continue;
+          }
+          if (inCode) {
+            out.push(escapeHTML(line));
+            continue;
+          }
+          let h = escapeHTML(line);
+          let start = h.indexOf(bt);
+          while (start !== -1) {
+            const end = h.indexOf(bt, start + 1);
+            if (end === -1) break;
+            h = h.slice(0, start) + '<code>' + h.slice(start + 1, end) + '</code>' + h.slice(end + 1);
+            start = h.indexOf(bt, start + 13);
+          }
+          h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+          if (h.startsWith('&gt;')) {
+            h = '<blockquote style="margin:4px 0;padding-left:8px;border-left:2px solid rgba(255,255,255,.2);">' + h + '</blockquote>';
+          }
+          out.push(h);
+        }
+        if (inCode) out.push('</code></pre>');
+        return out.join('<br>');
+      }
+      for (const ev of (events || [])) {
+        if (ev.type === 'assistant_delta') {
+          const k = ev.item_id || ev.turn_id || '__assistant__';
+          if (!assistantByItem.has(k)) assistantByItem.set(k, appendLine('line-assistant', ''));
+          assistantByItem.get(k).textContent += (ev.text || '');
+        } else if (ev.type === 'tool_command') {
+          const k = ev.item_id || ev.turn_id || '';
+          if (ev.text) pendingToolCommands.push(ev.text);
+          if (k) {
+            toolCommandByItem.set(k, ev.text || 'Command');
+            const block = toolByItem.get(k);
+            if (block && block.summary) block.summary.textContent = ev.text || 'Command';
+          } else {
+            appendLine('line-tool', ev.text || 'Command');
+          }
+        } else if (ev.type === 'assistant_message') {
+          const k = ev.item_id || ev.turn_id || '';
+          if (k && assistantByItem.has(k)) assistantByItem.get(k).innerHTML = renderMarkdown(ev.text || '');
+          else {
+            const el = appendLine('line-assistant', '');
+            el.innerHTML = renderMarkdown(ev.text || '');
+          }
+        } else if (ev.type === 'user_message') {
+          appendLine('line-user', '> ' + (ev.text || ''));
+        } else if (ev.type === 'tool_output') {
+          const k = ev.item_id || ev.turn_id || ('tool_' + Math.random());
+          let block = toolByItem.get(k);
+          if (!block) {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.className = 'line-tool';
+            let label = toolCommandByItem.get(k) || '';
+            if (!label && pendingToolCommands.length) label = pendingToolCommands.shift();
+            summary.textContent = label || 'Command';
+            const pre = document.createElement('pre');
+            pre.style.margin = '6px 0 8px';
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.border = '1px solid rgba(255,255,255,.12)';
+            pre.style.borderRadius = '4px';
+            pre.style.padding = '8px';
+            pre.style.background = 'rgba(0,0,0,.2)';
+            details.appendChild(summary);
+            details.appendChild(pre);
+            stream.appendChild(details);
+            block = { pre, summary };
+            toolByItem.set(k, block);
+          }
+          block.pre.textContent += (ev.text || '');
+        } else if (ev.type === 'error') {
+          appendLine('line-err', '[error] ' + (ev.text || ''));
+        } else if (ev.type === 'warning' || ev.type === 'approval_requested' || ev.type === 'approval_resolved' || ev.type === 'session_done') {
+          if (ev.type === 'approval_requested') {
+            const cmd = parseCommandFromApprovalText(ev.text || '');
+            if (cmd) pendingToolCommands.push(cmd);
+          }
+          appendLine('line-warn', '[' + ev.type + '] ' + (ev.text || ''));
+        }
+      }
     })();
   </script>
 </body>
@@ -969,79 +1645,85 @@ const uiBoardHTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{.Title}}</title>
   <style>
-    :root { --bg:#0b1020; --panel:#101a33; --card:#0f1830; --text:#e9eefc; --muted:#aab4d6; --accent:#86f7c5; --danger:#ff6b6b; }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap');
+    :root { --bg:#102022; --panel:#193133; --text:#e7fbff; --muted:#8dc7cf; --accent:#13daec; --line:#326267; --warn:#facc15; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
-    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
-    header .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-    h1 { margin:0; font-size:15px; letter-spacing:.06em; text-transform:uppercase; color: rgba(233,238,252,.82); }
+    body { margin:0; font-family: "Space Grotesk", ui-sans-serif, system-ui; background:var(--bg); color:var(--text); min-height:100dvh; display:flex; flex-direction:column; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(rgba(19,218,236,.04) 50%, rgba(0,0,0,0) 50%); background-size:100% 4px; }
+    header { border-bottom:1px solid var(--line); background: rgba(16,32,34,.96); position: sticky; top:0; z-index: 20; }
+    .topline { padding:10px 16px; background: rgba(25,49,51,.75); border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .topline b { color:var(--accent); letter-spacing:.14em; text-transform:uppercase; font-size:11px; }
+    .topline span { font-size:10px; color:var(--warn); font-weight:700; }
+    .navline { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 16px; }
+    h1 { margin:0; font-size:13px; text-transform:uppercase; letter-spacing:.12em; color:var(--accent); }
     .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px; }
-    .actions a { color:var(--accent); text-decoration:none; border:1px solid rgba(134,247,197,.35); padding:6px 10px; border-radius:999px; }
+    .actions a { color:var(--accent); text-decoration:none; border:1px solid var(--line); padding:7px 10px; border-radius:4px; text-transform:uppercase; font-size:10px; letter-spacing:.08em; }
     .actions form { display:flex; gap:8px; align-items:center; margin:0; }
-    .actions input[type="text"]{ width: 280px; max-width: 45vw; }
     details.cols { position: relative; }
-    details.cols > summary { list-style:none; cursor:pointer; user-select:none; border:1px solid rgba(255,255,255,.14); padding:6px 10px; border-radius:999px; color: rgba(233,238,252,.9); background: rgba(255,255,255,.04); }
-    details.cols[open] > summary { border-color: rgba(134,247,197,.35); box-shadow: 0 0 0 3px rgba(134,247,197,.08); }
-    /* Override the header form flex rule so the checklist is vertical. */
+    details.cols > summary { list-style:none; cursor:pointer; user-select:none; border:1px solid var(--line); padding:7px 10px; border-radius:4px; color: var(--muted); background: rgba(0,0,0,.2); text-transform:uppercase; font-size:10px; letter-spacing:.08em; }
+    details.cols[open] > summary { border-color: var(--accent); color: var(--accent); }
     .actions form.colmenu { display:flex; flex-direction:column; align-items:stretch; gap:0; }
-    .colmenu { position:absolute; right:0; top: 38px; z-index:50; width: 240px; max-width: calc(100vw - 48px); border-radius:12px; border:1px solid rgba(255,255,255,.12); background: rgba(16,26,51,.96); padding:10px 10px; box-shadow: 0 18px 50px rgba(0,0,0,.45); }
+    .colmenu { position:absolute; right:0; top: 38px; z-index:50; width: 240px; max-width: calc(100vw - 48px); border-radius:4px; border:1px solid var(--line); background: #112426; padding:10px 10px; box-shadow: 0 18px 50px rgba(0,0,0,.45); }
     .colmenu { max-height: min(60vh, 360px); overflow:auto; }
     .colmenu label { display:flex; justify-content:space-between; gap:10px; padding:6px 6px; border-radius:10px; }
-    .colmenu label:hover { background: rgba(255,255,255,.04); }
+    .colmenu label:hover { background: rgba(19,218,236,.08); }
     .colmenu input { transform: translateY(1px); }
     .colmenu button { width:100%; margin-top:8px; }
     .colmenu .row { display:flex; gap:8px; align-items:center; }
     .colmenu .row input[type="number"] { width: 96px; }
-    .pilltop { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); padding:7px 10px; border-radius: 999px; color: rgba(233,238,252,.78); }
-    .dot { width:8px; height:8px; border-radius:999px; background: rgba(134,247,197,.9); box-shadow: 0 0 0 4px rgba(134,247,197,.12); }
-    main { padding:16px 16px 20px; }
+    .pilltop { display:inline-flex; gap:10px; align-items:center; border:1px solid var(--line); background: rgba(0,0,0,.2); padding:7px 10px; border-radius: 4px; color: var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; }
+    .dot { width:8px; height:8px; border-radius:999px; background: var(--accent); box-shadow: 0 0 0 4px rgba(19,218,236,.12); }
+    main { padding:10px; flex:1; }
     .boardbar { display:flex; justify-content:flex-start; gap:10px; align-items:center; margin: 0 0 10px; }
-    .boardbar button { padding:8px 10px; border-radius:10px; }
-    dialog { border:1px solid rgba(255,255,255,.14); border-radius:14px; background: rgba(16,26,51,.98); color: var(--text); padding: 14px 14px; width: min(540px, calc(100vw - 48px)); }
+    .boardbar button { padding:8px 10px; border-radius:4px; text-transform:uppercase; font-size:10px; letter-spacing:.08em; }
+    dialog { border:1px solid var(--line); border-radius:6px; background: #112426; color: var(--text); padding: 14px 14px; width: min(540px, calc(100vw - 48px)); }
     dialog::backdrop { background: rgba(0,0,0,.55); }
-    dialog h3 { margin: 0 0 10px; font-size: 14px; letter-spacing:.08em; text-transform: uppercase; color: rgba(233,238,252,.75); }
+    dialog h3 { margin: 0 0 10px; font-size: 12px; letter-spacing:.12em; text-transform: uppercase; color: var(--accent); }
     dialog form { margin:0; display:flex; flex-direction:column; gap:10px; }
-    dialog input[type="text"] { width:100%; padding:10px 12px; border-radius:12px; }
+    dialog input[type="text"] { width:100%; padding:10px 12px; border-radius:4px; }
     dialog .dlgrow { display:flex; justify-content:flex-end; gap:10px; align-items:center; }
-    dialog .ghost { background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.12); }
-    .board { display:grid; gap:12px; grid-template-columns: repeat(var(--cols), minmax(250px, 1fr)); overflow-x:auto; padding-bottom:12px; }
-    .col { background: rgba(16,26,51,.78); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:10px; min-height: 70vh; }
-    .col h2 { margin:4px 6px 10px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: rgba(233,238,252,.62); display:flex; justify-content:space-between; }
-    .card { padding:12px 12px; margin:8px 4px; border-radius:12px; border:1px solid rgba(255,255,255,.10); background: rgba(15,24,48,.92); }
-    .id a { color: rgba(233,238,252,.85); text-decoration:none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
-    .title { margin-top:8px; font-size:13px; line-height:1.35; color: rgba(233,238,252,.92); }
+    dialog .ghost { background: rgba(0,0,0,.2); border:1px solid var(--line); }
+    .board { display:grid; gap:10px; grid-template-columns: repeat(var(--cols), minmax(250px, 1fr)); overflow-x:auto; padding-bottom:12px; }
+    .col { background: rgba(25,49,51,.35); border:1px solid var(--line); border-radius:4px; padding:10px; min-height: 68vh; }
+    .col h2 { margin:0 0 10px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color: var(--accent); display:flex; justify-content:space-between; border-bottom:1px solid var(--line); padding-bottom:6px; }
+    .card { padding:10px; margin:8px 0; border-radius:4px; border:1px solid var(--line); background: linear-gradient(180deg, rgba(0,0,0,.45), rgba(0,0,0,.45)), var(--cardbg, rgba(15,24,48,.92)); }
+    .id a { color: var(--accent); text-decoration:none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:11px; font-weight:700; }
+    .title { margin-top:7px; font-size:12px; line-height:1.35; color: #d9f9ff; }
     .meta { margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .meta form { margin:0; display:flex; gap:6px; align-items:center; }
-    select, input { background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color: var(--text); padding:7px 9px; border-radius:10px; font-size:12px; }
-    button { background: rgba(134,247,197,.12); border:1px solid rgba(134,247,197,.35); color: var(--text); padding:6px 8px; border-radius:8px; font-size:12px; cursor:pointer; }
-    button:hover { box-shadow: 0 0 0 3px rgba(134,247,197,.08); }
-    .hint { margin-top:10px; color: rgba(233,238,252,.50); font-size:12px; }
+    select, input { background: rgba(0,0,0,.28); border:1px solid var(--line); color: var(--text); padding:7px 9px; border-radius:4px; font-size:11px; }
+    button { background: rgba(19,218,236,.12); border:1px solid var(--line); color: var(--text); padding:6px 8px; border-radius:4px; font-size:11px; cursor:pointer; text-transform:uppercase; }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    .hint { margin-top:8px; color: var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
     .card.dragging { opacity: .6; }
-    .card { background: linear-gradient(180deg, rgba(0,0,0,.62), rgba(0,0,0,.62)), var(--cardbg, rgba(15,24,48,.92)); box-shadow: inset 0 0 0 3px var(--ring, rgba(255,255,255,0)); }
-    .card.running { border-color: rgba(134,247,197,.55); box-shadow: 0 0 0 3px rgba(134,247,197,.10), inset 0 0 0 3px rgba(134,247,197,.35); }
-    .spinner { width: 10px; height: 10px; border-radius: 999px; border: 2px solid rgba(233,238,252,.25); border-top-color: rgba(134,247,197,.85); animation: spin .8s linear infinite; }
+    .card { box-shadow: inset 0 0 0 2px var(--ring, rgba(255,255,255,0)); }
+    .card.running { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(19,218,236,.18), inset 0 0 0 2px rgba(19,218,236,.28); }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .col.dropover { border-color: rgba(134,247,197,.45); box-shadow: 0 0 0 3px rgba(134,247,197,.10); }
-    footer { padding: 12px 16px 18px; color: rgba(233,238,252,.50); font-size:12px; }
-    footer a { color: rgba(134,247,197,.85); text-decoration:none; }
-    footer a:hover { text-decoration: underline; }
+    .col.dropover { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(19,218,236,.15); }
+    footer { padding: 8px 12px; color:#111; font-size:10px; background:var(--warn); border-top:2px solid #111; text-transform:uppercase; letter-spacing:.08em; display:flex; justify-content:space-between; }
+    footer a { color:#111; text-decoration:none; font-weight:700; }
   </style>
 </head>
 <body>
   <header>
-    <div class="row">
-      <div>
+    <div class="topline">
+      <b>Hazel Nexus</b>
+      <span>[ SECURE_LINK_ACTIVE ]</span>
+    </div>
+    <div class="navline">
+      <div style="flex:1; min-width:200px;">
         <h1>{{.Title}}</h1>
       </div>
       <div class="actions">
         {{if .Running}}
-          <a href="/runs">Running...</a>
+          <a href="/history">Running...</a>
         {{else}}
           <form action="/mutate/run" method="post" onsubmit="return hazelRunTick(this)">
             <button type="submit">Run tick</button>
           </form>
         {{end}}
-        <a href="/runs">Runs</a>
+        <a href="/history">History</a>
+        <a href="/chat">Chat</a>
         <span class="pilltop" {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span>
         {{if and .SchedulerOn (gt .IntervalSec 0)}}
           <span class="pilltop"><span class="dot"></span>Next tick <span id="hzNextTick">{{.IntervalSec}}</span>s</span>
@@ -1075,7 +1757,8 @@ const uiBoardHTML = `<!doctype html>
         </details>
       </div>
     </div>
-    <div class="hint">Board edits update board.yaml. task.md edits only happen when you explicitly save.</div>
+    </div>
+    <div class="hint" style="padding:0 16px 10px;">Board edits update board.yaml. task.md edits only happen when you explicitly save.</div>
   </header>
   <main>
     <div class="boardbar">
@@ -1129,6 +1812,7 @@ const uiBoardHTML = `<!doctype html>
     </div>
   </main>
   <footer>
+    <span>Duchess_Operator_OS</span>
     <span>Powered by <a href="{{.HazelURL}}">Hazel</a></span>
   </footer>
   <script>
@@ -1144,7 +1828,7 @@ const uiBoardHTML = `<!doctype html>
       const fd = new FormData(form);
       fetch(form.action, { method: "POST", body: new URLSearchParams(fd), headers: { "X-Hazel-Ajax": "1" } })
         .then(() => {
-          setTimeout(() => location.href = "/runs", 250);
+          setTimeout(() => location.href = "/history", 250);
         })
         .catch(() => { if (btn) { btn.disabled = false; btn.textContent = "Run tick"; }});
       return false;
@@ -1220,49 +1904,91 @@ const uiTaskHTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{.Title}} - {{.Task.ID}}</title>
   <style>
-    :root { --bg:#0b1020; --panel:#101a33; --text:#e9eefc; --muted:#aab4d6; --link:#86f7c5; }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap');
+    :root { --bg:#102022; --panel:#193133; --text:#e7fbff; --muted:#8dc7cf; --link:#13daec; --line:#326267; --warn:#facc15; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background: radial-gradient(1200px 600px at 20% -10%, rgba(134,247,197,.18) 0%, rgba(20,33,74,.55) 35%, var(--bg) 70%); color:var(--text); }
-    header { padding:14px 20px; border-bottom:1px solid rgba(255,255,255,.08); background: rgba(16,26,51,.55); backdrop-filter: blur(10px); position: sticky; top:0; z-index: 10; }
-    header a { color: var(--link); text-decoration:none; font-size:12px; }
-    h1 { margin:6px 0 0; font-size:18px; }
-    .meta { margin-top:6px; color: rgba(233,238,252,.6); font-size:12px; }
-    main { padding: 18px 18px 28px; max-width: 1180px; margin:0 auto; }
-    .panel { background: rgba(16,26,51,.85); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
-    .panel h2 { margin:0 0 10px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: var(--muted); }
-    textarea { width:100%; min-height: 220px; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.10); color: var(--text); border-radius:10px; padding:10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
+    body { margin:0; font-family: "Space Grotesk", ui-sans-serif, system-ui; background:var(--bg); color:var(--text); min-height:100dvh; display:flex; flex-direction:column; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(rgba(19,218,236,.04) 50%, rgba(0,0,0,0) 50%); background-size:100% 4px; }
+    header { border-bottom:1px solid var(--line); background: rgba(16,32,34,.96); position: sticky; top:0; z-index: 20; padding:10px 16px; }
+    header a { color: var(--link); text-decoration:none; font-size:11px; text-transform:uppercase; border:1px solid var(--line); padding:6px 8px; border-radius:4px; }
+    h1 { margin:10px 0 0; font-size:16px; letter-spacing:.08em; text-transform:uppercase; color:var(--link); }
+    .meta { margin-top:6px; color: var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; }
+    main { padding: 12px; max-width: 1400px; margin:0 auto; width:100%; flex:1; }
+    .panel { background: rgba(25,49,51,.35); border:1px solid var(--line); border-radius:4px; padding:12px 14px; margin-bottom:10px; }
+    .panel h2 { margin:0 0 10px; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color: var(--link); border-bottom:1px solid var(--line); padding-bottom:6px; }
+    textarea { width:100%; min-height: 220px; background: rgba(0,0,0,.2); border:1px solid var(--line); color: var(--text); border-radius:4px; padding:10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
     .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
     .row form { margin:0; display:flex; gap:8px; align-items:center; }
-    .pill { border:1px solid rgba(255,255,255,.12); padding:2px 8px; border-radius:999px; font-size:12px; background: rgba(255,255,255,.04); }
-    .md { padding: 10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.03); }
+    .pill { border:1px solid var(--line); padding:2px 8px; border-radius:4px; font-size:10px; background: rgba(0,0,0,.2); text-transform:uppercase; }
+    .md { padding: 10px 12px; border-radius:4px; border:1px solid var(--line); background: rgba(0,0,0,.2); }
     .md :is(h1,h2,h3){ margin-top: 14px; }
     .md a { color: var(--link); }
     .md code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius:6px; }
-    .md pre { background: rgba(255,255,255,.06); padding: 10px 12px; border-radius:10px; overflow:auto; }
+    .md pre { background: rgba(0,0,0,.35); padding: 10px 12px; border-radius:4px; overflow:auto; }
     .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .backbtn { display:inline-flex; gap:10px; align-items:center; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); padding:8px 10px; border-radius:999px; }
-    .backbtn:hover { border-color: rgba(134,247,197,.35); box-shadow: 0 0 0 3px rgba(134,247,197,.08); }
+    .backbtn { display:inline-flex; gap:10px; align-items:center; border:1px solid var(--line); background: rgba(0,0,0,.2); padding:8px 10px; border-radius:4px; }
+    .backbtn:hover { border-color: var(--link); }
     .split { display:grid; grid-template-columns: 1fr; gap:12px; }
     @media (min-width: 980px) { .split { grid-template-columns: 1fr 1fr; } }
+    .gitbar { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px; }
+    .gitbar form { margin:0; display:flex; gap:6px; align-items:center; }
+    .gitbar input { width:100%; background: rgba(0,0,0,.2); border:1px solid var(--line); color:var(--text); border-radius:4px; padding:7px 8px; font-size:11px; }
+    .gitmeta { margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; font-size:10px; color:var(--muted); text-transform:uppercase; }
+    @media (max-width: 1200px) { .gitbar { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 760px) { .gitbar { grid-template-columns: 1fr; } }
     .editbar { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin: 10px 0 8px; }
-    .ghost { background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.12); color: var(--text); padding:8px 10px; border-radius:10px; cursor:pointer; }
-    .ghost:hover { box-shadow: 0 0 0 3px rgba(134,247,197,.08); }
+    .ghost { background: rgba(0,0,0,.2); border:1px solid var(--line); color: var(--text); padding:8px 10px; border-radius:4px; cursor:pointer; text-transform:uppercase; font-size:10px; }
+    .ghost:hover { border-color: var(--link); color:var(--link); }
     .editor { display:none; margin-top:10px; }
     .editor.on { display:block; }
-    footer { padding: 12px 16px 18px; color: rgba(233,238,252,.50); font-size:12px; }
-    footer a { color: rgba(134,247,197,.85); text-decoration:none; }
-    footer a:hover { text-decoration: underline; }
+    footer { padding: 8px 12px; color:#111; font-size:10px; background:var(--warn); border-top:2px solid #111; text-transform:uppercase; letter-spacing:.08em; display:flex; justify-content:space-between; }
+    footer a { color:#111; text-decoration:none; font-weight:700; }
   </style>
 </head>
 <body>
   <header>
     <div class="topbar">
-      <a class="backbtn" href="/">Back to board</a>
+      <a class="backbtn" href="{{if .Project}}/?project={{.Project}}{{else}}/{{end}}">Back to board</a>
+      <a class="backbtn" id="hzTaskChatBtn" href="{{.ChatHref}}" onclick="return hazelOpenTaskChat(event)">{{if .ChatLabel}}{{.ChatLabel}}{{else}}Run in Chat{{end}}</a>
       <div class="meta"><span {{if .AgentTip}}title="{{.AgentTip}}"{{end}}>Agent: {{.AgentName}}</span> | Status: {{.Task.Status}} | Updated: {{.Task.UpdatedAt}}</div>
     </div>
     <h1>{{.Task.ID}}: {{.Task.Title}}</h1>
   </header>
   <main>
+    <section class="panel">
+      <h2>Git Flow</h2>
+      <div class="gitbar">
+        <form action="/mutate/git/start" method="post">
+          <input type="hidden" name="id" value="{{.Task.ID}}" />
+          {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
+          <button class="ghost" type="submit">Start Branch</button>
+        </form>
+        <form action="/mutate/git/commit" method="post">
+          <input type="hidden" name="id" value="{{.Task.ID}}" />
+          {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
+          <input type="text" name="message" placeholder="Commit message (optional)" />
+          <button class="ghost" type="submit">Commit</button>
+        </form>
+        <form action="/mutate/git/pr" method="post">
+          <input type="hidden" name="id" value="{{.Task.ID}}" />
+          {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
+          <button class="ghost" type="submit">Open PR</button>
+        </form>
+        <form action="/mutate/git/merge" method="post">
+          <input type="hidden" name="id" value="{{.Task.ID}}" />
+          {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
+          <input type="text" name="merge_sha" placeholder="Merge SHA (blank = HEAD)" />
+          <button class="ghost" type="submit">Mark Merged</button>
+        </form>
+      </div>
+      <div class="gitmeta">
+        <span>Branch: {{if .Git.Branch}}<code>{{.Git.Branch}}</code>{{else}}-{{end}}</span>
+        <span>Base: {{if .Git.Base}}<code>{{.Git.Base}}</code>{{else}}-{{end}}</span>
+        <span>Last Commit: {{if .Git.LastCommit}}<code>{{.Git.LastCommit}}</code>{{else}}-{{end}}</span>
+        <span>PR: {{if .Git.PRURL}}<a href="{{.Git.PRURL}}" target="_blank" rel="noreferrer">{{.Git.PRURL}}</a>{{else}}-{{end}}</span>
+        <span>Merge: {{if .Git.MergeSHA}}<code>{{.Git.MergeSHA}}</code>{{else}}-{{end}}</span>
+      </div>
+    </section>
     <div class="split">
       <section class="panel">
         <h2>Task</h2>
@@ -1271,6 +1997,7 @@ const uiTaskHTML = `<!doctype html>
 	          <div class="row">
 	            <form action="/mutate/plan" method="post" onsubmit="return hazelPlan(this)">
 	              <input type="hidden" name="id" value="{{.Task.ID}}" />
+                {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
 	              <button class="ghost" type="submit">Plan</button>
 	            </form>
 	            <button class="ghost" type="button" onclick="hazelToggleEdit()">Edit</button>
@@ -1280,6 +2007,7 @@ const uiTaskHTML = `<!doctype html>
         <div id="hzEditor" class="editor">
           <form action="/mutate/task_md" method="post">
             <input type="hidden" name="id" value="{{.Task.ID}}" />
+            {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
             <textarea name="content">{{.TaskMD}}</textarea>
             <div class="row">
               <button type="submit">Save task.md</button>
@@ -1289,12 +2017,32 @@ const uiTaskHTML = `<!doctype html>
         </div>
       </section>
       <section class="panel">
-        <h2>Impl</h2>
+        {{if .HasPlan}}
+        <h2>Plan Proposal</h2>
+        <div class="row" style="margin-top:0;margin-bottom:10px;">
+          <form action="/mutate/plan_decision" method="post">
+            <input type="hidden" name="id" value="{{.Task.ID}}" />
+            {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
+            <input type="hidden" name="decision" value="accept" />
+            <button class="ghost" type="submit">Accept Plan</button>
+          </form>
+          <form action="/mutate/plan_decision" method="post">
+            <input type="hidden" name="id" value="{{.Task.ID}}" />
+            {{if .Project}}<input type="hidden" name="project" value="{{.Project}}" />{{end}}
+            <input type="hidden" name="decision" value="decline" />
+            <button class="ghost" type="submit">Decline Plan</button>
+          </form>
+        </div>
+        <div class="md">{{.PlanHTML}}</div>
+        {{else}}
+        <h2>Implementation Notes</h2>
         <div class="md">{{.ImplHTML}}</div>
+        {{end}}
       </section>
     </div>
   </main>
   <footer>
+    <span>Duchess_Operator_OS</span>
     <span>Powered by <a href="{{.HazelURL}}">Hazel</a></span>
   </footer>
   <script>
@@ -1316,6 +2064,24 @@ const uiTaskHTML = `<!doctype html>
         .then(() => setTimeout(() => location.reload(), 1500))
         .catch(() => { if (btn) { btn.disabled = false; btn.textContent = "Plan"; }});
       return false;
+    }
+
+    function hazelOpenTaskChat(ev) {
+      if (!ev) return true;
+      try {
+        if (window.parent && window.parent !== window) {
+          ev.preventDefault();
+          window.parent.postMessage({
+            type: "hazel-open-chat-task",
+            project: "{{.Project}}",
+            task: "{{.Task.ID}}",
+            autorun: {{if .ChatAutoRun}}true{{else}}false{{end}},
+            session: "{{.ChatSession}}"
+          }, "*");
+          return false;
+        }
+      } catch (_) {}
+      return true;
     }
   </script>
 </body>
